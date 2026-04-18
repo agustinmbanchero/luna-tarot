@@ -1,0 +1,96 @@
+{
+  "servicios": {
+    "pregunta_puntual": {
+      "nombre": "Pregunta puntual",
+      "descripcion": "1 carta + respuesta directa",
+      "precio": 3000
+    },
+    "tirada_simple": {
+      "nombre": "Tirada simple",
+      "descripcion": "3 cartas + lectura",
+      "precio": 5000,
+      "cartas": 3
+    },
+    "tirada_completa": {
+      "nombre": "Tirada completa",
+      "descripcion": "7 cartas + lectura profunda",
+      "precio": 9000,
+      "cartas": 7
+    },
+    "desbloqueo_caminos": {
+      "nombre": "Desbloqueo de caminos",
+      "descripcion": "Lectura energética + guía de acción concreta",
+      "precio": 8000
+    },
+    "corte_lazos": {
+      "nombre": "Corte de lazos",
+      "descripcion": "Para vínculos que drenan o bloquean el avance",
+      "precio": 8000
+    },
+    "proteccion_amor": {
+      "nombre": "Protección amor",
+      "descripcion": "Escudo energético en vínculos",
+      "precio": 7000
+    },
+    "proteccion_economica": {
+      "nombre": "Protección económica",
+      "descripcion": "Atracción de abundancia y estabilidad",
+      "precio": 7000
+    },
+    "carta_astral": {
+      "nombre": "Carta Astral Completa",
+      "descripcion": "PDF premium — tarot + numerología + astrología",
+      "precio": 25000
+    }
+  },
+  "packs_preguntas": {
+    "pack_inicio": {
+      "nombre": "Pack Inicio",
+      "preguntas": 5,
+      "precio": 12000
+    },
+    "pack_media": {
+      "nombre": "Pack Media",
+      "preguntas": 10,
+      "precio": 20000
+    },
+    "pack_avanzado": {
+      "nombre": "Pack Avanzado",
+      "preguntas": 15,
+      "precio": 27000
+    },
+    "pack_total": {
+      "nombre": "Pack Total",
+      "preguntas": 20,
+      "precio": 32000
+    }
+  },
+  "packs_combinados": {
+    "pack_claridad": {
+      "nombre": "Pack Claridad",
+      "incluye": "Tirada completa + 5 preguntas",
+      "precio": 18000
+    },
+    "pack_amor_total": {
+      "nombre": "Pack Amor Total",
+      "incluye": "Tirada amor + Protección amor + Corte de lazos + 5 preguntas",
+      "precio": 28000
+    },
+    "pack_exito": {
+      "nombre": "Pack Éxito",
+      "incluye": "Tirada trabajo + Protección económica + 10 preguntas",
+      "precio": 30000
+    },
+    "pack_transformacion": {
+      "nombre": "Pack Transformación",
+      "incluye": "Carta Astral + Desbloqueo de caminos",
+      "precio": 35000
+    },
+    "pack_completo": {
+      "nombre": "Pack Completo",
+      "incluye": "Carta Astral + Tirada completa + Protección a elección + 10 preguntas",
+      "precio": 50000
+    }
+  },
+  "tolerancia_pago": 100
+}
