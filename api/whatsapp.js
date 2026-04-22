@@ -24,6 +24,22 @@ async function enviarMensaje(numero, texto) {
   });
 }
 
+// Envía múltiples mensajes cortos con delay entre ellos
+// Claude separa los mensajes con |||
+async function enviarMensajesMultiples(numero, respuesta) {
+  const partes = respuesta
+    .split('|||')
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  for (let i = 0; i < partes.length; i++) {
+    await enviarMensaje(numero, partes[i]);
+    if (i < partes.length - 1) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+}
+
 async function enviarImagen(numero, urlImagen, caption = '') {
   await twilioClient.messages.create({
     from: process.env.TWILIO_WHATSAPP_NUMBER,
@@ -106,10 +122,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen) {
         session.servicio = servicioDetectado.key;
         session.precioServicio = servicioDetectado.precio;
 
-        const alias = process.env.ALIAS || '[alias]';
-        const cbu = process.env.CBU || '[CBU]';
+        const alias = process.env.ALIAS;
+        const cbu = process.env.CBU;
 
-        respuesta = `perfecto! 🌙 ${servicioDetectado.nombre} son $${servicioDetectado.precio.toLocaleString('es-AR')}.\n\npodés transferir a:\n*Alias:* ${alias}\n*CBU:* ${cbu}\n*Monto exacto:* $${servicioDetectado.precio.toLocaleString('es-AR')}\n\ncuando hagas la transferencia mandame el comprobante y te paso con luna ✨`;
+        // Solo mostrar datos de pago si están configurados
+        if (alias && cbu) {
+          respuesta = `perfecto! 🌙 ${servicioDetectado.nombre} son $${servicioDetectado.precio.toLocaleString('es-AR')}.\n\npodés transferir a:\n*Alias:* ${alias}\n*CBU:* ${cbu}\n*Monto exacto:* $${servicioDetectado.precio.toLocaleString('es-AR')}\n\ncuando hagas la transferencia mandame el comprobante y te paso con luna ✨`;
+        } else {
+          respuesta = `perfecto! 🌙 ${servicioDetectado.nombre} son $${servicioDetectado.precio.toLocaleString('es-AR')}.\n\nen un momento te paso los datos para la transferencia.`;
+        }
         session.etapa = 'esperando_comprobante';
       } else {
         // Sofía responde con ayuda para elegir
@@ -123,25 +144,53 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen) {
     // ── Esperando comprobante de pago ──────────────────────────────────────
     case 'esperando_comprobante': {
       if (tieneImagen) {
-        // Validación por imagen — asumimos válido (agregar OCR si se quiere)
-        session.montosPagados.push(session.precioServicio);
-        session.etapa = 'con_luna';
+        // Comprobante recibido — pasar a verificación manual
+        session.etapa = 'verificando_pago';
         session.esClienteNuevo = false;
 
-        respuesta = `recibí el comprobante, gracias! ✨ ya le aviso a luna.\n\nella está terminando con la consulta anterior — en unos minutos te escribe 🌙`;
-      } else {
-        // Intentar detectar monto en el texto
-        const monto = detectarMonto(mensajeTexto);
-        if (monto && validarPago(monto, session.precioServicio)) {
-          session.montosPagados.push(monto);
-          session.etapa = 'con_luna';
-          session.esClienteNuevo = false;
-          respuesta = `listo, todo confirmado! ✨ ya le aviso a luna.\n\nella está terminando con la consulta anterior — en unos minutitos te escribe 🌙`;
-        } else if (monto) {
-          respuesta = `hmm, el monto que veo no coincide con el servicio (debería ser $${session.precioServicio?.toLocaleString('es-AR')}). ¿podés verificar y mandarme el comprobante de nuevo?`;
-        } else {
-          respuesta = `cuando hagas la transferencia mandame el comprobante (foto o texto con el monto) y te confirmo en segundos ✨`;
+        // Notificar al dueño si tiene número configurado
+        const numeroAdmin = process.env.ADMIN_WHATSAPP;
+        if (numeroAdmin) {
+          try {
+            await enviarMensaje(
+              `whatsapp:${numeroAdmin}`,
+              `🔔 *Nuevo comprobante recibido*\n\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\n\nPara confirmar el pago respondé:\n✅ CONFIRMAR ${numero}\n❌ RECHAZAR ${numero}`
+            );
+          } catch (e) {
+            console.error('Error notificando admin:', e);
+          }
         }
+
+        respuesta = `listo, recibí el comprobante ✨|||estoy verificando el pago — en unos minutos te confirmo y te paso con luna 🌙`;
+      } else {
+        respuesta = `mandame la foto del comprobante de transferencia y en un momento lo verifico ✨`;
+      }
+      break;
+    }
+
+    // ── Verificando pago (esperando confirmación manual del admin) ─────────
+    case 'verificando_pago': {
+      // El admin puede confirmar enviando "CONFIRMAR +numero" o "RECHAZAR +numero"
+      const esAdmin = numero === `whatsapp:${process.env.ADMIN_WHATSAPP}`;
+      if (esAdmin) {
+        if (mensajeTexto.toUpperCase().startsWith('CONFIRMAR')) {
+          const clienteNumero = mensajeTexto.split(' ')[1];
+          const sessionCliente = await getSession(clienteNumero);
+          sessionCliente.etapa = 'con_luna';
+          sessionCliente.montosPagados.push(sessionCliente.precioServicio);
+          await saveSession(clienteNumero, sessionCliente);
+          await enviarMensaje(clienteNumero, `pago confirmado! ✨ ya le aviso a luna, en unos minutos te escribe 🌙`);
+          respuesta = `✅ pago confirmado para ${clienteNumero}`;
+        } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
+          const clienteNumero = mensajeTexto.split(' ')[1];
+          const sessionCliente = await getSession(clienteNumero);
+          sessionCliente.etapa = 'esperando_comprobante';
+          await saveSession(clienteNumero, sessionCliente);
+          await enviarMensaje(clienteNumero, `hmm, no pude verificar el comprobante. ¿podés mandarlo de nuevo o verificar el monto? el servicio son $${sessionCliente.precioServicio?.toLocaleString('es-AR')} 🙏`);
+          respuesta = `❌ pago rechazado para ${clienteNumero}`;
+        }
+      } else {
+        respuesta = `ya estoy verificando tu pago, en unos minutos te confirmo 🌙`;
       }
       break;
     }
