@@ -252,17 +252,23 @@ module.exports = async function handler(req, res) {
       return res.status(400).send('');
     }
 
-    // Responder a Twilio inmediatamente (evita timeout)
-    res.status(200).send('');
-
-    // Procesar y responder de forma asíncrona
+    // Procesar mensaje ANTES de responder a Twilio
     const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen);
 
+    // Responder con TwiML para que Twilio entregue el mensaje
+    const twiml = new twilio.twiml.MessagingResponse();
     if (respuesta) {
-      await enviarMensaje(numero, respuesta);
+      twiml.message(respuesta);
     }
+    res.setHeader('Content-Type', 'text/xml');
+    res.status(200).send(twiml.toString());
+
   } catch (error) {
     console.error('Error en webhook WhatsApp:', error);
-    res.status(200).send('');
+    // Responder igual para que Twilio no reintente
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message('un segundo amor, estoy concentrándome 🌙 escribime de nuevo');
+    res.setHeader('Content-Type', 'text/xml');
+    res.status(200).send(twiml.toString());
   }
 };
