@@ -23,9 +23,14 @@ const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '+5491132851143';
 
 // ── Helpers de envío ──────────────────────────────────────────────────────────
 
+function whatsappFrom() {
+  const num = process.env.TWILIO_WHATSAPP_NUMBER || '';
+  return num.startsWith('whatsapp:') ? num : `whatsapp:${num}`;
+}
+
 async function enviarMensaje(numero, texto) {
   await twilioClient.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER,
+    from: whatsappFrom(),
     to: numero,
     body: texto
   });
