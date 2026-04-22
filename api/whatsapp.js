@@ -2,29 +2,26 @@ const twilio = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk');
 const { getSession, saveSession } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
-const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
+const { getSofiaPrompt, getLunaPrompt, esNoche } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
 const precios = require('../config/precios.json');
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// Datos de la cuenta receptora — usados para validar comprobantes
-const CUENTA = {
-  alias: process.env.ALIAS || 'estudiolunatarot',
-  cuit: process.env.CUIT || '23-39211722-9',
-  titular: process.env.TITULAR || 'Ezequiel Mosquera'
-};
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-const BASE_URL = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : process.env.BASE_URL || 'http://localhost:3000';
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+const CUENTA = {
+  alias: process.env.ALIAS || 'estudiolunatarot',
+  cuit: process.env.CUIT || '23-39211722-9',
+  titular: process.env.TITULAR || 'Ezequiel Mosquera'
+};
+
+const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '+5491132851143';
+
+// ── Helpers de envío ──────────────────────────────────────────────────────────
 
 async function enviarMensaje(numero, texto) {
   await twilioClient.messages.create({
@@ -34,8 +31,6 @@ async function enviarMensaje(numero, texto) {
   });
 }
 
-// Envía múltiples mensajes cortos con delay entre ellos
-// Claude separa los mensajes con |||
 async function enviarMensajesMultiples(numero, respuesta) {
   const partes = respuesta
     .split('|||')
@@ -45,7 +40,7 @@ async function enviarMensajesMultiples(numero, respuesta) {
   for (let i = 0; i < partes.length; i++) {
     await enviarMensaje(numero, partes[i]);
     if (i < partes.length - 1) {
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 1200));
     }
   }
 }
@@ -59,10 +54,52 @@ async function enviarImagen(numero, urlImagen, caption = '') {
   });
 }
 
-// Valida el comprobante PDF/imagen usando Claude Vision
+function urlCarta(cartaId) {
+  const base = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.BASE_URL || 'http://localhost:3000';
+  return `${base}/public/cartas/${cartaId}.jpg`;
+}
+
+// ── Detección de servicio con Claude ─────────────────────────────────────────
+
+async function detectarServicioConIA(mensajeTexto) {
+  const serviciosDisponibles = Object.keys(precios.servicios)
+    .concat(Object.keys(precios.packs_combinados))
+    .concat(Object.keys(precios.packs_preguntas));
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 50,
+    messages: [{
+      role: 'user',
+      content: `El usuario escribió: "${mensajeTexto}"
+
+¿Está eligiendo un servicio específico de tarot? Si sí, ¿cuál es el más probable?
+
+Servicios disponibles: ${serviciosDisponibles.join(', ')}
+
+Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" si no está eligiendo uno todavía.`
+    }]
+  });
+
+  const key = response.content[0].text.trim().toLowerCase().replace(/[^a-z_]/g, '');
+
+  // Buscar en todos los catálogos
+  const todos = {
+    ...precios.servicios,
+    ...precios.packs_combinados,
+    ...precios.packs_preguntas
+  };
+
+  if (todos[key]) return { key, ...todos[key] };
+  return null;
+}
+
+// ── Validación de comprobante PDF/imagen con Claude ───────────────────────────
+
 async function validarComprobante(mediaUrl, montoEsperado) {
   try {
-    // Descargar el archivo de Twilio
     const authStr = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
     const response = await fetch(mediaUrl, {
       headers: { Authorization: `Basic ${authStr}` }
@@ -72,7 +109,6 @@ async function validarComprobante(mediaUrl, montoEsperado) {
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
 
-    // Determinar tipo de media para Claude
     const mediaType = contentType.includes('pdf') ? 'application/pdf' : contentType;
 
     const result = await anthropic.messages.create({
@@ -81,257 +117,209 @@ async function validarComprobante(mediaUrl, montoEsperado) {
       messages: [{
         role: 'user',
         content: [
-          {
-            type: 'document',
-            source: { type: 'base64', media_type: mediaType, data: base64 }
-          },
+          { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } },
           {
             type: 'text',
-            text: `Analizá este comprobante de transferencia bancaria y respondé SOLO con JSON:
-{
-  "valido": true/false,
-  "motivo": "explicación breve",
-  "monto_encontrado": número o null,
-  "alias_encontrado": true/false,
-  "cuit_encontrado": true/false
-}
+            text: `Analizá este comprobante de transferencia y respondé SOLO con JSON:
+{"valido": true/false, "motivo": "string", "monto_encontrado": número_o_null, "alias_encontrado": true/false, "cuit_encontrado": true/false}
 
 Verificá que contenga:
-- Alias destino: "${CUENTA.alias}" (o variante similar)
-- CUIT/CUIL: "${CUENTA.cuit}" (o el número sin guiones: ${CUENTA.cuit.replace(/-/g, '')})
-- Monto: $${montoEsperado.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 100})
+- Alias destino: "${CUENTA.alias}"
+- CUIT/CUIL: "${CUENTA.cuit}" (o ${CUENTA.cuit.replace(/-/g, '')})
+- Monto: $${montoEsperado?.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 100})
 
-Si falta alguno de los tres → valido: false`
+Si falta cualquiera → valido: false`
           }
         ]
       }]
     });
 
-    const texto = result.content[0].text;
-    const jsonMatch = texto.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { valido: false, motivo: 'no se pudo leer el comprobante' };
-
-    return JSON.parse(jsonMatch[0]);
+    const match = result.content[0].text.match(/\{[\s\S]*\}/);
+    if (!match) return { valido: false, motivo: 'no se pudo leer el comprobante' };
+    return JSON.parse(match[0]);
   } catch (err) {
     console.error('Error validando comprobante:', err);
     return { valido: false, motivo: 'error al procesar el archivo' };
   }
 }
 
-function urlCarta(cartaId) {
-  return `${BASE_URL}/public/cartas/${cartaId}.jpg`;
+// ── Iniciar consulta de Luna ──────────────────────────────────────────────────
+
+async function iniciarLuna(numero) {
+  const session = await getSession(numero);
+  if (session.etapa !== 'esperando_luna') return;
+
+  session.etapa = 'con_luna';
+  await saveSession(numero, session);
+
+  const prompt = getLunaPrompt({
+    cartasIds: session.cartasLanzadas || [],
+    nombreCliente: session.nombre,
+    servicio: session.servicio,
+    historialSofia: session.resumenSofia,
+    contextoDadoPorCliente: session.contextoPorCliente
+  });
+
+  const mensajeLuna = await chat(
+    prompt,
+    [],
+    `La clienta acaba de pagar por "${session.servicio}". ${session.contextoPorCliente ? `Quiere que sepas: "${session.contextoPorCliente}".` : ''} Presentate como Luna de forma cálida y natural, y preguntale sobre qué quiere consultar. Usá ||| para separar mensajes si querés mandar varios.`
+  );
+
+  await enviarMensajesMultiples(numero, mensajeLuna);
 }
 
-function detectarServicio(texto) {
-  const t = texto.toLowerCase();
-  const s = precios.servicios;
-  const pc = precios.packs_combinados;
-  const pp = precios.packs_preguntas;
+// ── Flujo principal ───────────────────────────────────────────────────────────
 
-  if (t.includes('pregunta puntual') || t.includes('pregunta')) return { key: 'pregunta_puntual', ...s.pregunta_puntual };
-  if (t.includes('tirada completa') || t.includes('7 cartas')) return { key: 'tirada_completa', ...s.tirada_completa };
-  if (t.includes('tirada simple') || t.includes('3 cartas')) return { key: 'tirada_simple', ...s.tirada_simple };
-  if (t.includes('desbloqueo')) return { key: 'desbloqueo_caminos', ...s.desbloqueo_caminos };
-  if (t.includes('corte de lazos') || t.includes('corte lazos')) return { key: 'corte_lazos', ...s.corte_lazos };
-  if (t.includes('proteccion amor') || t.includes('protección amor')) return { key: 'proteccion_amor', ...s.proteccion_amor };
-  if (t.includes('proteccion econom') || t.includes('protección econom')) return { key: 'proteccion_economica', ...s.proteccion_economica };
-  if (t.includes('carta astral')) return { key: 'carta_astral', ...s.carta_astral };
-  if (t.includes('pack claridad')) return { key: 'pack_claridad', ...pc.pack_claridad };
-  if (t.includes('pack amor')) return { key: 'pack_amor_total', ...pc.pack_amor_total };
-  if (t.includes('pack éxito') || t.includes('pack exito')) return { key: 'pack_exito', ...pc.pack_exito };
-  if (t.includes('pack transformacion') || t.includes('pack transformación')) return { key: 'pack_transformacion', ...pc.pack_transformacion };
-  if (t.includes('pack completo')) return { key: 'pack_completo', ...pc.pack_completo };
-  if (t.includes('pack inicio') || t.includes('5 preguntas')) return { key: 'pack_inicio', ...pp.pack_inicio };
-  if (t.includes('pack media') || t.includes('10 preguntas')) return { key: 'pack_media', ...pp.pack_media };
-  return null;
-}
-
-function detectarMonto(texto) {
-  const match = texto.match(/\$?\s?(\d[\d.,]+)/);
-  if (!match) return null;
-  const limpio = match[1].replace(/\./g, '').replace(',', '.');
-  return parseFloat(limpio);
-}
-
-function validarPago(monto, precioEsperado) {
-  const tolerancia = precios.tolerancia_pago || 100;
-  return monto >= precioEsperado - tolerancia && monto <= precioEsperado + tolerancia;
-}
-
-function getHora() {
-  return new Date().getHours();
-}
-
-// ─── Flujo principal ─────────────────────────────────────────────────────────
-
-async function manejarMensaje(numero, mensajeTexto, tieneImagen, req) {
+async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   const session = await getSession(numero);
   session.ultimaActividad = Date.now();
 
-  // Agregar mensaje del usuario al historial
+  const esNuevoMensaje = session.etapa === 'bienvenida';
+
+  // Agregar al historial
   session.historialChat.push({ role: 'user', content: mensajeTexto });
 
   let respuesta = '';
 
   switch (session.etapa) {
 
-    // ── Bienvenida ─────────────────────────────────────────────────────────
+    // ── Bienvenida ───────────────────────────────────────────────────────────
     case 'bienvenida': {
-      const prompt = getSofiaPrompt(getHora(), !session.esClienteNuevo, session.nombre);
+      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, true);
       respuesta = await chat(prompt, [], mensajeTexto);
       session.etapa = 'esperando_eleccion';
       break;
     }
 
-    // ── Esperando que elija servicio ───────────────────────────────────────
+    // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      const servicioDetectado = detectarServicio(mensajeTexto);
+      // Intentar detectar servicio con IA
+      const servicioDetectado = await detectarServicioConIA(mensajeTexto);
 
       if (servicioDetectado) {
         session.servicio = servicioDetectado.key;
         session.precioServicio = servicioDetectado.precio;
+        session.etapa = 'confirmando_servicio';
 
-        const alias = process.env.ALIAS;
-        const cbu = process.env.CBU;
+        // Sofía confirma con su voz natural
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        const confirmacion = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después.`
+        );
 
-        // Solo mostrar datos de pago si están configurados
-        if (alias && cbu) {
-          respuesta = `perfecto! 🌙 ${servicioDetectado.nombre} son $${servicioDetectado.precio.toLocaleString('es-AR')}.\n\npodés transferir a:\n*Alias:* ${alias}\n*CBU:* ${cbu}\n*Monto exacto:* $${servicioDetectado.precio.toLocaleString('es-AR')}\n\ncuando hagas la transferencia mandame el comprobante y te paso con luna ✨`;
-        } else {
-          respuesta = `perfecto! 🌙 ${servicioDetectado.nombre} son $${servicioDetectado.precio.toLocaleString('es-AR')}.\n\nen un momento te paso los datos para la transferencia.`;
-        }
+        // Confirmación de Sofía + datos de pago separados
+        const alias = CUENTA.alias;
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame el PDF del comprobante — desde tu app bancaria usá "compartir comprobante" ✨`;
+
+        respuesta = `${confirmacion}|||${datosPago}`;
         session.etapa = 'esperando_comprobante';
       } else {
-        // Sofía responde con ayuda para elegir
-        const prompt = getSofiaPrompt(getHora(), !session.esClienteNuevo, session.nombre);
-        const histSinUltimo = session.historialChat.slice(0, -1);
-        respuesta = await chat(prompt, histSinUltimo, mensajeTexto);
+        // Sofía ayuda a elegir con contexto completo
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
       }
       break;
     }
 
-    // ── Esperando comprobante de pago ──────────────────────────────────────
+    // ── Esperando comprobante ────────────────────────────────────────────────
     case 'esperando_comprobante': {
-      if (tieneImagen) {
+      if (tieneImagen && mediaUrl) {
         session.esClienteNuevo = false;
 
-        // Avisar al cliente que estamos verificando
         await enviarMensaje(numero, `recibí el comprobante ✨`);
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 1000));
         await enviarMensaje(numero, `dame un segundo que lo verifico...`);
 
-        // Obtener la URL del comprobante desde Twilio
-        const mediaUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages/${req?.body?.MessageSid}/Media/${req?.body?.MediaSid0 || '0'}`;
-        const urlDirecta = req?.body?.MediaUrl0;
-
-        // Validar con Claude
-        const validacion = urlDirecta
-          ? await validarComprobante(urlDirecta, session.precioServicio)
-          : { valido: false, motivo: 'no se pudo obtener el archivo' };
+        const validacion = await validarComprobante(mediaUrl, session.precioServicio);
 
         if (validacion.valido) {
-          // Pago aprobado automáticamente
-          session.etapa = 'esperando_luna';
           session.montosPagados.push(session.precioServicio);
-          await saveSession(numero, session);
+          session.etapa = 'pidiendo_nombre';
 
-          await new Promise(r => setTimeout(r, 500));
-          await enviarMensaje(numero, `todo bien! pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 800));
-          await enviarMensaje(numero, `ya le aviso a luna. está terminando con una consulta y en 3 minutitos te escribe ella directamente ✨`);
-
-          // Luna escribe en 3 minutos
-          setTimeout(async () => {
-            try {
-              const s = await getSession(numero);
-              if (s.etapa === 'esperando_luna') {
-                s.etapa = 'con_luna';
-                await saveSession(numero, s);
-                const prompt = getLunaPrompt([], s.nombre, s.servicio, s.historialConsulta);
-                const bienvenidaLuna = await chat(prompt, [], `El cliente acaba de pagar por "${s.servicio}". Presentate como Luna de forma cálida y preguntale sobre qué quiere consultar. Sé breve — máximo 2 líneas.`);
-                await enviarMensaje(numero, bienvenidaLuna);
-              }
-            } catch (e) {
-              console.error('Error al iniciar Luna:', e);
-            }
-          }, 3 * 60 * 1000);
-
-          respuesta = ''; // Ya enviamos los mensajes manualmente
+          await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
+          await new Promise(r => setTimeout(r, 1000));
+          respuesta = `¿cómo te llamo para avisarle a luna?`;
         } else {
-          // Pago rechazado — notificar al admin para revisión manual
-          const adminNum = process.env.ADMIN_WHATSAPP || '+5491132851143';
+          // Notificar admin para revisión manual
           try {
             await enviarMensaje(
-              `whatsapp:${adminNum}`,
-              `⚠️ *Comprobante no validado automáticamente*\n\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\nMotivo: ${validacion.motivo}\n\nEl comprobante fue enviado por el cliente. Revisalo y respondé:\n✅ *APROBAR ${numero}*\n❌ *RECHAZAR ${numero}*`
+              `whatsapp:${ADMIN_WHATSAPP}`,
+              `⚠️ *Comprobante no validado*\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\nMotivo: ${validacion.motivo}\n\nRespondé:\n✅ APROBAR ${numero}\n❌ RECHAZAR ${numero}`
             );
-          } catch (e) {
-            console.error('Error notificando admin:', e);
-          }
+          } catch (e) { console.error('Error notif admin:', e); }
 
           session.etapa = 'verificando_pago';
-          await new Promise(r => setTimeout(r, 500));
-          await enviarMensaje(numero, `hmm, no pude verificar algunos datos del comprobante 🙏`);
           await new Promise(r => setTimeout(r, 800));
-          respuesta = `asegurate de mandar el PDF desde "compartir comprobante" en tu app del banco, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+          respuesta = `hmm, no pude verificar algunos datos 🙏|||asegurate de mandar el PDF desde "compartir comprobante" en tu app, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
-        respuesta = `para verificar el pago necesito que me mandes el PDF del comprobante — desde tu app bancaria usá la opción "compartir comprobante" 📄`;
+        respuesta = `para verificar el pago necesito el PDF del comprobante 📄|||desde tu app bancaria usá "compartir comprobante" y mandámelo por acá`;
       }
       break;
     }
 
-    // ── Verificando pago (revisión manual por admin) ───────────────────────
+    // ── Verificando pago (revisión manual admin) ─────────────────────────────
     case 'verificando_pago': {
-      const esAdmin = numero === `whatsapp:${process.env.ADMIN_WHATSAPP || '+5491132851143'}`;
+      const esAdmin = numero === `whatsapp:${ADMIN_WHATSAPP}`;
       if (esAdmin) {
         if (mensajeTexto.toUpperCase().startsWith('APROBAR')) {
-          const clienteNumero = mensajeTexto.split(' ')[1];
-          const sessionCliente = await getSession(clienteNumero);
-          sessionCliente.etapa = 'esperando_luna';
-          sessionCliente.montosPagados.push(sessionCliente.precioServicio);
-          await saveSession(clienteNumero, sessionCliente);
-          await enviarMensaje(clienteNumero, `pago confirmado ✨ ya le aviso a luna, en 3 minutos te escribe 🌙`);
-
-          setTimeout(async () => {
-            try {
-              const s = await getSession(clienteNumero);
-              if (s.etapa === 'esperando_luna') {
-                s.etapa = 'con_luna';
-                await saveSession(clienteNumero, s);
-                const prompt = getLunaPrompt([], s.nombre, s.servicio, s.historialConsulta);
-                const bienvenidaLuna = await chat(prompt, [], `El cliente acaba de pagar por "${s.servicio}". Presentate como Luna de forma cálida y preguntale sobre qué quiere consultar. Máximo 2 líneas.`);
-                await enviarMensaje(clienteNumero, bienvenidaLuna);
-              }
-            } catch (e) { console.error('Error iniciando Luna tras aprobación manual:', e); }
-          }, 3 * 60 * 1000);
-
-          respuesta = `✅ aprobado. Luna escribe en 3 minutos a ${clienteNumero}`;
+          const clienteNum = mensajeTexto.split(' ')[1];
+          const sc = await getSession(clienteNum);
+          sc.etapa = 'pidiendo_nombre';
+          sc.montosPagados.push(sc.precioServicio);
+          await saveSession(clienteNum, sc);
+          await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿cómo te llamo para avisarle a luna?`);
+          respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
-          const clienteNumero = mensajeTexto.split(' ')[1];
-          const sessionCliente = await getSession(clienteNumero);
-          sessionCliente.etapa = 'esperando_comprobante';
-          await saveSession(clienteNumero, sessionCliente);
-          await enviarMensaje(clienteNumero, `mirá, no pudimos verificar tu pago 🙏 ¿podés mandarnos el PDF del comprobante con el alias *${CUENTA.alias}* y el monto exacto de $${sessionCliente.precioServicio?.toLocaleString('es-AR')}?`);
-          respuesta = `❌ rechazado. se pidió nuevo comprobante a ${clienteNumero}`;
-        } else {
-          respuesta = `comandos disponibles:\nAPROBAR whatsapp:+549...\nRECHAZAR whatsapp:+549...`;
+          const clienteNum = mensajeTexto.split(' ')[1];
+          const sc = await getSession(clienteNum);
+          sc.etapa = 'esperando_comprobante';
+          await saveSession(clienteNum, sc);
+          await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar el PDF del comprobante con el alias *${CUENTA.alias}* y el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
+          respuesta = `❌ rechazado. se pidió nuevo comprobante`;
         }
       } else {
-        respuesta = `ya estamos verificando tu pago, en unos minutos te confirmamos 🌙`;
+        respuesta = `estamos verificando tu pago, en unos minutos te confirmamos 🌙`;
       }
       break;
     }
 
-    // ── Esperando que Luna entre (3 minutos post-pago) ────────────────────
+    // ── Pedir nombre ─────────────────────────────────────────────────────────
+    case 'pidiendo_nombre': {
+      session.nombre = mensajeTexto.trim().split(' ')[0]; // Solo el primer nombre
+      session.etapa = 'pidiendo_contexto';
+      respuesta = `un gusto, ${session.nombre} 🌙|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
+      break;
+    }
+
+    // ── Pedir contexto para Luna ─────────────────────────────────────────────
+    case 'pidiendo_contexto': {
+      session.contextoPorCliente = mensajeTexto;
+      session.resumenSofia = session.historialChat
+        .slice(0, -1)
+        .map(m => `${m.role === 'user' ? 'Clienta' : 'Sofía'}: ${m.content}`)
+        .join('\n');
+      session.etapa = 'esperando_luna';
+
+      respuesta = `perfecto, ya le aviso ✨|||luna está terminando con alguien, en 3 minutitos te escribe ella directamente 🌙`;
+
+      // Luna entra en 3 minutos
+      setTimeout(() => iniciarLuna(numero), 3 * 60 * 1000);
+      break;
+    }
+
+    // ── Esperando que Luna entre ─────────────────────────────────────────────
     case 'esperando_luna': {
       respuesta = `luna está por escribirte, un momentito más 🌙`;
       break;
     }
 
-    // ── Luna atiende ───────────────────────────────────────────────────────
+    // ── Luna atiende ─────────────────────────────────────────────────────────
     case 'con_luna': {
-      // Detectar tema para selección de cartas
       if (!session.historialConsulta) {
         session.historialConsulta = mensajeTexto;
       }
@@ -343,68 +331,73 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, req) {
         const cantidadCartas = session.servicio === 'tirada_completa' ? 7 : 3;
         session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
 
-        // Enviar mensaje de "concentrándome"
-        await enviarMensaje(numero, `dame un ratito que me concentro... 📓`);
-
-        // Simular delay y enviar cartas con imágenes
+        await enviarMensaje(numero, `dame un ratito que me concentro... 🌙`);
         await new Promise(r => setTimeout(r, 3000));
 
         for (let i = 0; i < session.cartasLanzadas.length; i++) {
           const carta = session.cartasLanzadas[i];
-          const imgUrl = urlCarta(carta);
-          await enviarImagen(numero, imgUrl, nombreCarta(carta));
+          try {
+            await enviarImagen(numero, urlCarta(carta), nombreCarta(carta));
+          } catch (e) {
+            await enviarMensaje(numero, `🔮 ${nombreCarta(carta)}`);
+          }
           if (i < session.cartasLanzadas.length - 1) {
             await new Promise(r => setTimeout(r, 2000));
           }
         }
 
-        // Ahora Luna interpreta
+        const prompt = getLunaPrompt({
+          cartasIds: session.cartasLanzadas,
+          nombreCliente: session.nombre,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
+
         const nombresCartas = session.cartasLanzadas.map(nombreCarta);
-        const prompt = getLunaPrompt(nombresCartas, session.nombre, session.servicio, session.historialConsulta);
-        const histSinUltimo = session.historialChat.slice(0, -1);
-        respuesta = await chat(prompt, histSinUltimo, `El cliente pregunta: "${mensajeTexto}". Las cartas que salieron son: ${nombresCartas.join(', ')}. Hacé la lectura completa.`);
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta pregunta: "${mensajeTexto}". Las cartas que salieron son: ${nombresCartas.join(', ')}. Hacé la lectura completa, conectando las cartas entre sí. Usá ||| para separar en mensajes cortos.`
+        );
         session.etapa = 'upsell';
       } else {
-        // Conversación con Luna sin tirada nueva
-        const prompt = getLunaPrompt(
-          session.cartasLanzadas.map(nombreCarta),
-          session.nombre,
-          session.servicio,
-          session.historialConsulta
-        );
-        const histSinUltimo = session.historialChat.slice(0, -1);
-        respuesta = await chat(prompt, histSinUltimo, mensajeTexto);
+        const prompt = getLunaPrompt({
+          cartasIds: session.cartasLanzadas,
+          nombreCliente: session.nombre,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
       }
       break;
     }
 
-    // ── Post-consulta: upsell ──────────────────────────────────────────────
+    // ── Upsell post-consulta ─────────────────────────────────────────────────
     case 'upsell': {
-      const prompt = getLunaPrompt(
-        session.cartasLanzadas.map(nombreCarta),
-        session.nombre,
-        session.servicio,
-        session.historialConsulta
-      );
-      const histSinUltimo = session.historialChat.slice(0, -1);
-      respuesta = await chat(prompt, histSinUltimo, mensajeTexto);
+      const prompt = getLunaPrompt({
+        cartasIds: session.cartasLanzadas,
+        nombreCliente: session.nombre,
+        servicio: session.servicio,
+        historialSofia: session.resumenSofia,
+        contextoDadoPorCliente: session.contextoPorCliente
+      });
+      respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
       break;
     }
 
     default: {
-      // Fallback: reiniciar con Sofía
       session.etapa = 'bienvenida';
-      const prompt = getSofiaPrompt(getHora(), false, null);
+      const prompt = getSofiaPrompt(false, null, true);
       respuesta = await chat(prompt, [], mensajeTexto);
     }
   }
 
-  // Guardar respuesta en historial
   if (respuesta) {
     session.historialChat.push({ role: 'assistant', content: respuesta });
   }
 
-  // Mantener historial acotado
   if (session.historialChat.length > 40) {
     session.historialChat = session.historialChat.slice(-40);
   }
@@ -413,11 +406,10 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, req) {
   return respuesta;
 }
 
-// ─── Handler de Vercel ───────────────────────────────────────────────────────
+// ── Handler Vercel ────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
-    // Health check
     return res.status(200).json({ status: 'ok', bot: 'Luna Tarot' });
   }
 
@@ -430,25 +422,21 @@ module.exports = async function handler(req, res) {
     const numero = body.From;
     const mensajeTexto = body.Body || '';
     const tieneImagen = body.NumMedia && parseInt(body.NumMedia) > 0;
+    const mediaUrl = body.MediaUrl0 || null;
 
-    if (!numero) {
-      return res.status(400).send('');
-    }
+    if (!numero) return res.status(400).send('');
 
-    // Procesar mensaje
-    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, req);
+    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl);
 
-    // Enviar respuesta como múltiples mensajes si tiene |||
     if (respuesta) {
       await enviarMensajesMultiples(numero, respuesta);
     }
 
-    // Responder a Twilio con TwiML vacío (ya enviamos los mensajes por API)
     res.setHeader('Content-Type', 'text/xml');
     res.status(200).send('<Response></Response>');
 
   } catch (error) {
-    console.error('Error en webhook WhatsApp:', error);
+    console.error('Error en webhook:', error);
     res.setHeader('Content-Type', 'text/xml');
     res.status(200).send('<Response></Response>');
   }
