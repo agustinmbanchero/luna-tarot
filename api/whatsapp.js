@@ -1,9 +1,19 @@
 const twilio = require('twilio');
+const Anthropic = require('@anthropic-ai/sdk');
 const { getSession, saveSession } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
 const precios = require('../config/precios.json');
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Datos de la cuenta receptora — usados para validar comprobantes
+const CUENTA = {
+  alias: process.env.ALIAS || 'estudiolunatarot',
+  cuit: process.env.CUIT || '23-39211722-9',
+  titular: process.env.TITULAR || 'Ezequiel Mosquera'
+};
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -47,6 +57,65 @@ async function enviarImagen(numero, urlImagen, caption = '') {
     mediaUrl: [urlImagen],
     body: caption
   });
+}
+
+// Valida el comprobante PDF/imagen usando Claude Vision
+async function validarComprobante(mediaUrl, montoEsperado) {
+  try {
+    // Descargar el archivo de Twilio
+    const authStr = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+    const response = await fetch(mediaUrl, {
+      headers: { Authorization: `Basic ${authStr}` }
+    });
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+
+    // Determinar tipo de media para Claude
+    const mediaType = contentType.includes('pdf') ? 'application/pdf' : contentType;
+
+    const result = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 300,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: mediaType, data: base64 }
+          },
+          {
+            type: 'text',
+            text: `Analizá este comprobante de transferencia bancaria y respondé SOLO con JSON:
+{
+  "valido": true/false,
+  "motivo": "explicación breve",
+  "monto_encontrado": número o null,
+  "alias_encontrado": true/false,
+  "cuit_encontrado": true/false
+}
+
+Verificá que contenga:
+- Alias destino: "${CUENTA.alias}" (o variante similar)
+- CUIT/CUIL: "${CUENTA.cuit}" (o el número sin guiones: ${CUENTA.cuit.replace(/-/g, '')})
+- Monto: $${montoEsperado.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 100})
+
+Si falta alguno de los tres → valido: false`
+          }
+        ]
+      }]
+    });
+
+    const texto = result.content[0].text;
+    const jsonMatch = texto.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { valido: false, motivo: 'no se pudo leer el comprobante' };
+
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.error('Error validando comprobante:', err);
+    return { valido: false, motivo: 'error al procesar el archivo' };
+  }
 }
 
 function urlCarta(cartaId) {
@@ -144,54 +213,119 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen) {
     // ── Esperando comprobante de pago ──────────────────────────────────────
     case 'esperando_comprobante': {
       if (tieneImagen) {
-        // Comprobante recibido — pasar a verificación manual
-        session.etapa = 'verificando_pago';
         session.esClienteNuevo = false;
 
-        // Notificar al dueño si tiene número configurado
-        const numeroAdmin = process.env.ADMIN_WHATSAPP;
-        if (numeroAdmin) {
+        // Avisar al cliente que estamos verificando
+        await enviarMensaje(numero, `recibí el comprobante ✨`);
+        await new Promise(r => setTimeout(r, 800));
+        await enviarMensaje(numero, `dame un segundo que lo verifico...`);
+
+        // Obtener la URL del comprobante desde Twilio
+        const mediaUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages/${req?.body?.MessageSid}/Media/${req?.body?.MediaSid0 || '0'}`;
+        const urlDirecta = req?.body?.MediaUrl0;
+
+        // Validar con Claude
+        const validacion = urlDirecta
+          ? await validarComprobante(urlDirecta, session.precioServicio)
+          : { valido: false, motivo: 'no se pudo obtener el archivo' };
+
+        if (validacion.valido) {
+          // Pago aprobado automáticamente
+          session.etapa = 'esperando_luna';
+          session.montosPagados.push(session.precioServicio);
+          await saveSession(numero, session);
+
+          await new Promise(r => setTimeout(r, 500));
+          await enviarMensaje(numero, `todo bien! pago verificado 🌙`);
+          await new Promise(r => setTimeout(r, 800));
+          await enviarMensaje(numero, `ya le aviso a luna. está terminando con una consulta y en 3 minutitos te escribe ella directamente ✨`);
+
+          // Luna escribe en 3 minutos
+          setTimeout(async () => {
+            try {
+              const s = await getSession(numero);
+              if (s.etapa === 'esperando_luna') {
+                s.etapa = 'con_luna';
+                await saveSession(numero, s);
+                const prompt = getLunaPrompt([], s.nombre, s.servicio, s.historialConsulta);
+                const bienvenidaLuna = await chat(prompt, [], `El cliente acaba de pagar por "${s.servicio}". Presentate como Luna de forma cálida y preguntale sobre qué quiere consultar. Sé breve — máximo 2 líneas.`);
+                await enviarMensaje(numero, bienvenidaLuna);
+              }
+            } catch (e) {
+              console.error('Error al iniciar Luna:', e);
+            }
+          }, 3 * 60 * 1000);
+
+          respuesta = ''; // Ya enviamos los mensajes manualmente
+        } else {
+          // Pago rechazado — notificar al admin para revisión manual
+          const adminNum = process.env.ADMIN_WHATSAPP || '+5491132851143';
           try {
             await enviarMensaje(
-              `whatsapp:${numeroAdmin}`,
-              `🔔 *Nuevo comprobante recibido*\n\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\n\nPara confirmar el pago respondé:\n✅ CONFIRMAR ${numero}\n❌ RECHAZAR ${numero}`
+              `whatsapp:${adminNum}`,
+              `⚠️ *Comprobante no validado automáticamente*\n\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\nMotivo: ${validacion.motivo}\n\nEl comprobante fue enviado por el cliente. Revisalo y respondé:\n✅ *APROBAR ${numero}*\n❌ *RECHAZAR ${numero}*`
             );
           } catch (e) {
             console.error('Error notificando admin:', e);
           }
-        }
 
-        respuesta = `listo, recibí el comprobante ✨|||estoy verificando el pago — en unos minutos te confirmo y te paso con luna 🌙`;
+          session.etapa = 'verificando_pago';
+          await new Promise(r => setTimeout(r, 500));
+          await enviarMensaje(numero, `hmm, no pude verificar algunos datos del comprobante 🙏`);
+          await new Promise(r => setTimeout(r, 800));
+          respuesta = `asegurate de mandar el PDF desde "compartir comprobante" en tu app del banco, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+        }
       } else {
-        respuesta = `mandame la foto del comprobante de transferencia y en un momento lo verifico ✨`;
+        respuesta = `para verificar el pago necesito que me mandes el PDF del comprobante — desde tu app bancaria usá la opción "compartir comprobante" 📄`;
       }
       break;
     }
 
-    // ── Verificando pago (esperando confirmación manual del admin) ─────────
+    // ── Verificando pago (revisión manual por admin) ───────────────────────
     case 'verificando_pago': {
-      // El admin puede confirmar enviando "CONFIRMAR +numero" o "RECHAZAR +numero"
-      const esAdmin = numero === `whatsapp:${process.env.ADMIN_WHATSAPP}`;
+      const esAdmin = numero === `whatsapp:${process.env.ADMIN_WHATSAPP || '+5491132851143'}`;
       if (esAdmin) {
-        if (mensajeTexto.toUpperCase().startsWith('CONFIRMAR')) {
+        if (mensajeTexto.toUpperCase().startsWith('APROBAR')) {
           const clienteNumero = mensajeTexto.split(' ')[1];
           const sessionCliente = await getSession(clienteNumero);
-          sessionCliente.etapa = 'con_luna';
+          sessionCliente.etapa = 'esperando_luna';
           sessionCliente.montosPagados.push(sessionCliente.precioServicio);
           await saveSession(clienteNumero, sessionCliente);
-          await enviarMensaje(clienteNumero, `pago confirmado! ✨ ya le aviso a luna, en unos minutos te escribe 🌙`);
-          respuesta = `✅ pago confirmado para ${clienteNumero}`;
+          await enviarMensaje(clienteNumero, `pago confirmado ✨ ya le aviso a luna, en 3 minutos te escribe 🌙`);
+
+          setTimeout(async () => {
+            try {
+              const s = await getSession(clienteNumero);
+              if (s.etapa === 'esperando_luna') {
+                s.etapa = 'con_luna';
+                await saveSession(clienteNumero, s);
+                const prompt = getLunaPrompt([], s.nombre, s.servicio, s.historialConsulta);
+                const bienvenidaLuna = await chat(prompt, [], `El cliente acaba de pagar por "${s.servicio}". Presentate como Luna de forma cálida y preguntale sobre qué quiere consultar. Máximo 2 líneas.`);
+                await enviarMensaje(clienteNumero, bienvenidaLuna);
+              }
+            } catch (e) { console.error('Error iniciando Luna tras aprobación manual:', e); }
+          }, 3 * 60 * 1000);
+
+          respuesta = `✅ aprobado. Luna escribe en 3 minutos a ${clienteNumero}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
           const clienteNumero = mensajeTexto.split(' ')[1];
           const sessionCliente = await getSession(clienteNumero);
           sessionCliente.etapa = 'esperando_comprobante';
           await saveSession(clienteNumero, sessionCliente);
-          await enviarMensaje(clienteNumero, `hmm, no pude verificar el comprobante. ¿podés mandarlo de nuevo o verificar el monto? el servicio son $${sessionCliente.precioServicio?.toLocaleString('es-AR')} 🙏`);
-          respuesta = `❌ pago rechazado para ${clienteNumero}`;
+          await enviarMensaje(clienteNumero, `mirá, no pudimos verificar tu pago 🙏 ¿podés mandarnos el PDF del comprobante con el alias *${CUENTA.alias}* y el monto exacto de $${sessionCliente.precioServicio?.toLocaleString('es-AR')}?`);
+          respuesta = `❌ rechazado. se pidió nuevo comprobante a ${clienteNumero}`;
+        } else {
+          respuesta = `comandos disponibles:\nAPROBAR whatsapp:+549...\nRECHAZAR whatsapp:+549...`;
         }
       } else {
-        respuesta = `ya estoy verificando tu pago, en unos minutos te confirmo 🌙`;
+        respuesta = `ya estamos verificando tu pago, en unos minutos te confirmamos 🌙`;
       }
+      break;
+    }
+
+    // ── Esperando que Luna entre (3 minutos post-pago) ────────────────────
+    case 'esperando_luna': {
+      respuesta = `luna está por escribirte, un momentito más 🌙`;
       break;
     }
 
