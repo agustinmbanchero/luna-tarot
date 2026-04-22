@@ -164,7 +164,7 @@ function getHora() {
 
 // ─── Flujo principal ─────────────────────────────────────────────────────────
 
-async function manejarMensaje(numero, mensajeTexto, tieneImagen) {
+async function manejarMensaje(numero, mensajeTexto, tieneImagen, req) {
   const session = await getSession(numero);
   session.ultimaActividad = Date.now();
 
@@ -435,23 +435,21 @@ module.exports = async function handler(req, res) {
       return res.status(400).send('');
     }
 
-    // Procesar mensaje ANTES de responder a Twilio
-    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen);
+    // Procesar mensaje
+    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, req);
 
-    // Responder con TwiML para que Twilio entregue el mensaje
-    const twiml = new twilio.twiml.MessagingResponse();
+    // Enviar respuesta como múltiples mensajes si tiene |||
     if (respuesta) {
-      twiml.message(respuesta);
+      await enviarMensajesMultiples(numero, respuesta);
     }
+
+    // Responder a Twilio con TwiML vacío (ya enviamos los mensajes por API)
     res.setHeader('Content-Type', 'text/xml');
-    res.status(200).send(twiml.toString());
+    res.status(200).send('<Response></Response>');
 
   } catch (error) {
     console.error('Error en webhook WhatsApp:', error);
-    // Responder igual para que Twilio no reintente
-    const twiml = new twilio.twiml.MessagingResponse();
-    twiml.message('un segundo amor, estoy concentrándome 🌙 escribime de nuevo');
     res.setHeader('Content-Type', 'text/xml');
-    res.status(200).send(twiml.toString());
+    res.status(200).send('<Response></Response>');
   }
 };
