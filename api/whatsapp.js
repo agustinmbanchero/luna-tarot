@@ -309,7 +309,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta describió: "${mensajeTexto}". Sugeríle estos servicios de forma cálida, explicando brevemente por qué cada uno le vendría bien según lo que contó:\n${descripcionServicios}\nPreguntale si le interesa alguno o si quiere combinarlos. No menciones precios todavía. Usá ||| para separar mensajes si hace falta.`
+          `La clienta describió: "${mensajeTexto}". Sugeríle estos servicios explicando brevemente por qué cada uno le vendría bien:\n${descripcionServicios}\nTerminá preguntando si le interesa alguno o si quiere combinar varios. PROHIBIDO: confirmar que eligió algo, mencionar precios, mencionar el alias, pedir datos de pago, preguntar por Luna, preguntar el nombre. Solo presentar opciones y preguntar cuál le interesa.`
         );
       } else {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
