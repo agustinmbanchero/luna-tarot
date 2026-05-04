@@ -226,7 +226,7 @@ Si el monto está dentro del rango → valido: true`
 
 // ── Iniciar consulta de Luna ──────────────────────────────────────────────────
 
-async function iniciarLuna(numero, session) {
+async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = null) {
   session.etapa = 'con_luna';
   await saveSession(numero, session);
 
@@ -238,12 +238,11 @@ async function iniciarLuna(numero, session) {
     contextoDadoPorCliente: session.contextoPorCliente
   });
 
-  const mensajeLuna = await chat(
-    prompt,
-    [],
-    `La clienta acaba de pagar por "${session.servicio}". ${session.contextoPorCliente ? `Quiere que sepas: "${session.contextoPorCliente}".` : ''} Presentate como Luna de forma cálida y natural, y preguntale sobre qué quiere consultar. Usá ||| para separar mensajes si querés mandar varios.`
-  );
+  const instruccion = mensajeClienteMientrasEsperaba
+    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. Empezá con algo breve y natural tipo "disculpá la demora" sin hacer drama, luego presentate como Luna y preguntale qué lo trajo acá. Sin emojis. Usá ||| para separar mensajes.`
+    : `La clienta acaba de pagar por "${session.servicio}". ${session.contextoPorCliente ? `Quiere que sepas: "${session.contextoPorCliente}".` : ''} Presentate como Luna de forma cálida y natural, y preguntale sobre qué quiere consultar. Sin emojis. Usá ||| para separar mensajes.`;
 
+  const mensajeLuna = await chat(prompt, [], instruccion);
   await enviarMensajesMultiples(numero, mensajeLuna);
 }
 
@@ -271,8 +270,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   // ── Si Luna debería haber entrado ya, la hacemos entrar ─────────────────────
   if (session.etapa === 'esperando_luna' && session.lunaDebeEscribirEn && Date.now() >= session.lunaDebeEscribirEn) {
     await saveSession(numero, session);
-    await iniciarLuna(numero, session);
-    return ''; // Luna ya mandó sus mensajes
+    await iniciarLuna(numero, session, mensajeTexto); // pasa el mensaje para que Luna reconozca la espera
+    return '';
   }
 
   switch (session.etapa) {
@@ -481,9 +480,9 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
       const necesitaCartas = session.servicio?.includes('tirada') && session.cartasLanzadas.length === 0;
 
-      if (necesitaCartas && !session.lunaRecopiloData) {
-        // Paso 1: Luna pide datos biográficos antes de tirar cartas
-        session.lunaRecopiloData = false; // marcamos que estamos esperando datos
+      if (!session.lunaRecopiloData) {
+        // PASO 1 (todos los servicios): Luna pide datos biográficos
+        session.lunaRecopiloData = true;
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
@@ -494,17 +493,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dijo: "${mensajeTexto}". Antes de tirar las cartas, necesitás sus datos para centrar la lectura. Pedíle de forma natural: fecha de nacimiento (día, mes, año), signo del zodíaco si lo sabe, y nombre completo si no lo tenés. Un mensaje corto, sin listar todo de golpe.`
+          `La clienta dijo: "${mensajeTexto}". Pedíle sus datos de forma natural para personalizar la lectura: fecha de nacimiento (día, mes, año) y signo si lo sabe. Un solo mensaje corto, conversacional. Sin emojis.`
         );
-        session.lunaRecopiloData = true; // próximo mensaje ya tiene los datos
-      } else if (necesitaCartas && session.lunaRecopiloData) {
-        // Paso 2: ya tiene los datos, ahora tira cartas
+      } else if (necesitaCartas) {
+        // PASO 2a: tiene datos, servicio con tirada → tirar cartas y leer
         session.datosBiograficos = mensajeTexto;
-
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
         const cantidadCartas = session.servicio?.includes('completa') ? 7 : 3;
 
-        // Guardar cartas en sesión ANTES de los delays para evitar duplicados
+        // Guardar cartas inmediatamente para evitar duplicados por mensajes simultáneos
         session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
         await saveSession(numero, session);
 
@@ -523,22 +520,38 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           }
         }
 
-        const prompt = getLunaPrompt({
+        const promptTirada = getLunaPrompt({
           cartasIds: session.cartasLanzadas,
           nombreCliente: session.nombre,
           servicio: session.servicio,
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
-
         const nombresCartas = session.cartasLanzadas.map(nombreCarta);
+        respuesta = await chat(
+          promptTirada,
+          session.historialChat.slice(0, -1),
+          `La clienta consulta: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Cartas: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas. Sin emojis. Usá ||| para separar mensajes.`
+        );
+        session.etapa = 'upsell';
+      } else if (!session.datosBiograficos) {
+        // PASO 2b: tiene datos, servicio sin tirada → hacer la lectura/servicio directamente
+        session.datosBiograficos = mensajeTexto;
+        const prompt = getLunaPrompt({
+          cartasIds: [],
+          nombreCliente: session.nombre,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta consulta sobre: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Las cartas son: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas entre sí. Usá ||| para separar en mensajes cortos.`
+          `La clienta consulta: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Comenzá con el servicio contratado (${session.servicio}), incorporando los datos para personalizar. Sin emojis. Usá ||| para separar mensajes.`
         );
         session.etapa = 'upsell';
       } else {
+        // Conversación en curso con Luna
         const prompt = getLunaPrompt({
           cartasIds: session.cartasLanzadas,
           nombreCliente: session.nombre,
