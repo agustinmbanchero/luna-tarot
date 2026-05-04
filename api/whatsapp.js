@@ -268,10 +268,20 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
   let respuesta = '';
 
-  // ── Si Luna debería haber entrado ya, la hacemos entrar ─────────────────────
+  // ── Si Luna debería haber entrado ya, la hacemos entrar (solo si pagó) ──────
   if (session.etapa === 'esperando_luna' && session.lunaDebeEscribirEn && Date.now() >= session.lunaDebeEscribirEn) {
+    if (!session.montosPagados || session.montosPagados.length === 0) {
+      // No pagó — volver al inicio del flujo de pago
+      session.etapa = 'esperando_comprobante';
+      await saveSession(numero, session);
+      respuesta = `para continuar necesito que me mandes el comprobante de la transferencia 🙏`;
+      session.historialChat.push({ role: 'assistant', content: respuesta });
+      await saveSession(numero, session);
+      await enviarMensajesMultiples(numero, respuesta);
+      return '';
+    }
     await saveSession(numero, session);
-    await iniciarLuna(numero, session, mensajeTexto); // pasa el mensaje para que Luna reconozca la espera
+    await iniciarLuna(numero, session, mensajeTexto);
     return '';
   }
 
