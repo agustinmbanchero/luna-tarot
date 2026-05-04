@@ -1,6 +1,6 @@
 const twilio = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk');
-const { getSession, saveSession } = require('../lib/session-store');
+const { getSession, saveSession, deleteSession } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt, esNoche } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
@@ -129,14 +129,11 @@ async function validarComprobante(mediaUrl, montoEsperado) {
           {
             type: 'text',
             text: `Analizá este comprobante de transferencia y respondé SOLO con JSON:
-{"valido": true/false, "motivo": "string", "monto_encontrado": número_o_null, "alias_encontrado": true/false, "cuit_encontrado": true/false}
+{"valido": true/false, "motivo": "string", "monto_encontrado": número_o_null}
 
-Verificá que contenga:
-- Alias destino: "${CUENTA.alias}"
-- CUIT/CUIL: "${CUENTA.cuit}" (o ${CUENTA.cuit.replace(/-/g, '')})
-- Monto: $${montoEsperado?.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 100})
-
-Si falta cualquiera → valido: false`
+Verificá SOLO que el monto transferido sea aproximadamente $${montoEsperado?.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 500}).
+No importa el alias ni el CUIT destino.
+Si el monto está dentro del rango → valido: true`
           }
         ]
       }]
@@ -180,7 +177,19 @@ async function iniciarLuna(numero) {
 // ── Flujo principal ───────────────────────────────────────────────────────────
 
 async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
-  const session = await getSession(numero);
+  let session = await getSession(numero);
+
+  // Si el cliente saluda desde cero, reiniciar sesión conservando su nombre
+  const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar', 'reset'];
+  const textoLimpio = mensajeTexto?.toLowerCase().trim().replace(/[^a-záéíóúñü\s]/g, '') || '';
+  if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && session.etapa !== 'bienvenida') {
+    const nombreGuardado = session.nombre || null;
+    await deleteSession(numero);
+    session = await getSession(numero);
+    session.nombre = nombreGuardado;
+    session.esClienteNuevo = false; // es una vuelta, no cliente nuevo
+  }
+
   session.ultimaActividad = Date.now();
 
   const esNuevoMensaje = session.etapa === 'bienvenida';
@@ -262,7 +271,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
           session.etapa = 'verificando_pago';
           await new Promise(r => setTimeout(r, 800));
-          respuesta = `hmm, no pude verificar algunos datos 🙏|||asegurate de mandar una captura de pantalla del comprobante, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+          respuesta = `hmm, no pude verificar el monto 🙏|||asegurate de mandar una captura de pantalla del comprobante con el monto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
         respuesta = `para verificar el pago necesito una captura de pantalla del comprobante 📄|||sacale una foto a la pantalla después de transferir y mandámela por acá`;
