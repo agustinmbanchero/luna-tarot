@@ -251,11 +251,11 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
 async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   let session = await getSession(numero);
 
-  // Reiniciar sesión solo si ya hubo una conversación real (no en los primeros pasos)
-  const etapasAvanzadas = ['esperando_comprobante', 'verificando_pago', 'pidiendo_nombre', 'pidiendo_contexto', 'esperando_luna', 'con_luna', 'upsell'];
+  // Reiniciar sesión solo si está trabado en pago (no cuando Luna ya está atendiendo)
+  const etapasReiniciables = ['esperando_comprobante', 'verificando_pago'];
   const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar', 'reset'];
   const textoLimpio = mensajeTexto?.toLowerCase().trim().replace(/[^a-záéíóúñü\s]/g, '') || '';
-  if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && etapasAvanzadas.includes(session.etapa)) {
+  if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && etapasReiniciables.includes(session.etapa)) {
     const nombreGuardado = session.nombre || null;
     await deleteSession(numero);
     session = await getSession(numero);
