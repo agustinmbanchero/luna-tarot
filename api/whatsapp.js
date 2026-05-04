@@ -224,7 +224,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const confirmacion = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después. No preguntes el nombre.`
+          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con entusiasmo genuino en 1 mensaje corto. PROHIBIDO: preguntar el nombre, pedir datos personales, mencionar precio, alias o datos de pago (el sistema los manda solo).`
         );
 
         // Confirmación de Sofía + datos de pago separados
@@ -274,13 +274,30 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           respuesta = `hmm, no pude verificar el monto 🙏|||asegurate de mandar una captura de pantalla del comprobante con el monto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
-        // Texto mientras espera el comprobante — responder con naturalidad
-        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente según lo que dijo — si avisa que ya lo manda, decile que lo aguardás; si pregunta algo, respondele. Nunca repitas las instrucciones de pago si ya las diste.`
-        );
+        // Ver si quiere cambiar de servicio
+        const servicioNuevo = await detectarServicioConIA(mensajeTexto);
+        if (servicioNuevo) {
+          // Cambiar servicio y mostrar nuevos datos de pago
+          session.servicio = servicioNuevo.key;
+          session.precioServicio = servicioNuevo.precio;
+          const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+          const confirmacion = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta quiere cambiar a: "${servicioNuevo.nombre || servicioNuevo.key}". Confirmalo brevemente. No preguntes el nombre. No menciones precio ni alias — el sistema los manda después.`
+          );
+          const alias = CUENTA.alias;
+          const datosPago = `*Alias:* ${alias}|||*Monto exacto:* $${servicioNuevo.precio?.toLocaleString('es-AR')}|||mandame la captura cuando hagas la transferencia ✨`;
+          respuesta = `${confirmacion}|||${datosPago}`;
+        } else {
+          // Responder con naturalidad
+          const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente — si avisa que ya lo manda, decile que lo aguardás. No repitas las instrucciones de pago.`
+          );
+        }
       }
       break;
     }
