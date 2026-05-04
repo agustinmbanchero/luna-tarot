@@ -370,12 +370,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         session.precioServicio = total;
         session.etapa = 'esperando_comprobante';
 
-        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const confirmacion = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta eligió: ${nombresServicios}. Confirmalo con entusiasmo en 1 mensaje corto. No preguntes el nombre. No menciones precio ni alias (el sistema los manda).`
-        );
+        // Confirmación por código para evitar que Sofía diga el servicio equivocado
+        const confirmacion = `perfecto, ${nombresServicios.toLowerCase()} ✨`;
 
         const resumenServicios = seleccionados.length > 1
           ? seleccionados.map(s => `• ${s.nombre}: $${s.precio?.toLocaleString('es-AR')}`).join('\n') + `\n*Total: $${total.toLocaleString('es-AR')}*`
