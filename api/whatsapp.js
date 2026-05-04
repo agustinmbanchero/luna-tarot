@@ -89,11 +89,13 @@ async function detectarServicioConIA(mensajeTexto) {
       role: 'user',
       content: `El usuario escribió: "${mensajeTexto}"
 
-¿Está eligiendo un servicio específico de tarot? Si sí, ¿cuál es el más probable?
+¿Está nombrando o eligiendo EXPLÍCITAMENTE un servicio de tarot por su nombre? Solo contá como selección si el usuario dice el nombre del servicio claramente (ej: "quiero la tirada completa", "me llevo el pack claridad", "dame la tirada simple", "quiero el desbloqueo de caminos").
+
+NO contés como selección si solo describe su situación o problema (ej: "quiero ver mi trabajo", "estoy trabado", "tengo problemas de amor").
 
 Servicios disponibles: ${serviciosDisponibles.join(', ')}
 
-Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" si no está eligiendo uno todavía.`
+Respondé SOLO con el key exacto (ej: "tirada_simple") o "ninguno".`
     }]
   });
 
