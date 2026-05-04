@@ -114,7 +114,10 @@ async function validarComprobante(mediaUrl, montoEsperado) {
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
 
-    const mediaType = contentType.includes('pdf') ? 'application/pdf' : contentType;
+    const mediaType = contentType.includes('jpeg') || contentType.includes('jpg') ? 'image/jpeg'
+      : contentType.includes('png') ? 'image/png'
+      : contentType.includes('webp') ? 'image/webp'
+      : 'image/jpeg';
 
     const result = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -122,7 +125,7 @@ async function validarComprobante(mediaUrl, montoEsperado) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           {
             type: 'text',
             text: `Analizá este comprobante de transferencia y respondé SOLO con JSON:
@@ -217,7 +220,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         // Confirmación de Sofía + datos de pago separados
         const alias = CUENTA.alias;
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame el PDF del comprobante — desde tu app bancaria usá "compartir comprobante" ✨`;
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
 
         respuesta = `${confirmacion}|||${datosPago}`;
         session.etapa = 'esperando_comprobante';
@@ -259,10 +262,10 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
           session.etapa = 'verificando_pago';
           await new Promise(r => setTimeout(r, 800));
-          respuesta = `hmm, no pude verificar algunos datos 🙏|||asegurate de mandar el PDF desde "compartir comprobante" en tu app, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+          respuesta = `hmm, no pude verificar algunos datos 🙏|||asegurate de mandar una captura de pantalla del comprobante, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
-        respuesta = `para verificar el pago necesito el PDF del comprobante 📄|||desde tu app bancaria usá "compartir comprobante" y mandámelo por acá`;
+        respuesta = `para verificar el pago necesito una captura de pantalla del comprobante 📄|||sacale una foto a la pantalla después de transferir y mandámela por acá`;
       }
       break;
     }
@@ -284,7 +287,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           const sc = await getSession(clienteNum);
           sc.etapa = 'esperando_comprobante';
           await saveSession(clienteNum, sc);
-          await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar el PDF del comprobante con el alias *${CUENTA.alias}* y el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
+          await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar una captura de pantalla del comprobante con el alias *${CUENTA.alias}* y el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
           respuesta = `❌ rechazado. se pidió nuevo comprobante`;
         }
       } else {
