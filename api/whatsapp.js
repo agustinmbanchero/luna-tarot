@@ -224,7 +224,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const confirmacion = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después.`
+          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después. No preguntes el nombre.`
         );
 
         // Confirmación de Sofía + datos de pago separados
@@ -274,7 +274,13 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           respuesta = `hmm, no pude verificar el monto 🙏|||asegurate de mandar una captura de pantalla del comprobante con el monto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
-        respuesta = `para verificar el pago necesito una captura de pantalla del comprobante 📄|||sacale una foto a la pantalla después de transferir y mandámela por acá`;
+        // Texto mientras espera el comprobante — responder con naturalidad
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente según lo que dijo — si avisa que ya lo manda, decile que lo aguardás; si pregunta algo, respondele. Nunca repitas las instrucciones de pago si ya las diste.`
+        );
       }
       break;
     }
@@ -322,16 +328,28 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         .join('\n');
       session.etapa = 'esperando_luna';
 
-      respuesta = `perfecto, ya le aviso ✨|||luna está terminando con alguien, en 3 minutitos te escribe ella directamente 🌙`;
+      // Delay aleatorio entre 30s y 3 minutos para dar credibilidad
+      const demoraSeg = Math.floor(Math.random() * (180 - 30 + 1)) + 30;
+      session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
 
-      // Luna entra en 3 minutos
-      setTimeout(() => iniciarLuna(numero), 3 * 60 * 1000);
+      const fraseEspera = [
+        `perfecto, ya le aviso ✨|||luna está terminando con una consulta, en un ratito te escribe ella directamente 🌙`,
+        `dale, le mando mensaje ahora ✨|||luna está con alguien, en poquito te contacta ella 🌙`,
+        `perfecto ✨|||luna está cerrando una lectura, ya te escribe directamente 🌙`,
+        `ya le aviso a luna ✨|||está terminando con alguien, en un momento te escribe ella 🌙`,
+      ];
+      respuesta = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
       break;
     }
 
     // ── Esperando que Luna entre ─────────────────────────────────────────────
     case 'esperando_luna': {
-      respuesta = `luna está por escribirte, un momentito más 🌙`;
+      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+      respuesta = await chat(
+        prompt,
+        session.historialChat.slice(0, -1),
+        `El cliente dice: "${mensajeTexto}". Luna todavía no entró a la conversación, está terminando con otra persona. Respondé naturalmente según lo que dijo — si pregunta cuánto falta, tranquilizalo con calidez; si está impaciente, reconocé la espera. No repitas siempre la misma frase.`
+      );
       break;
     }
 
