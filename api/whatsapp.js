@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { getSession, saveSession } = require('../lib/session-store');
+const { getSession, saveSession, deleteSession } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
@@ -113,7 +113,6 @@ Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" 
 
 async function validarComprobante(mediaUrl, montoEsperado) {
   try {
-    // Descargar el archivo (Whapi requiere el token)
     const response = await fetch(mediaUrl, {
       headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}` }
     });
@@ -121,7 +120,11 @@ async function validarComprobante(mediaUrl, montoEsperado) {
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
-    const mediaType = contentType.includes('pdf') ? 'application/pdf' : contentType;
+
+    const mediaType = contentType.includes('jpeg') || contentType.includes('jpg') ? 'image/jpeg'
+      : contentType.includes('png') ? 'image/png'
+      : contentType.includes('webp') ? 'image/webp'
+      : 'image/jpeg';
 
     const result = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -129,18 +132,15 @@ async function validarComprobante(mediaUrl, montoEsperado) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
           {
             type: 'text',
             text: `Analizá este comprobante de transferencia y respondé SOLO con JSON:
-{"valido": true/false, "motivo": "string", "monto_encontrado": número_o_null, "alias_encontrado": true/false, "cuit_encontrado": true/false}
+{"valido": true/false, "motivo": "string", "monto_encontrado": número_o_null}
 
-Verificá que contenga:
-- Alias destino: "${CUENTA.alias}"
-- CUIT/CUIL: "${CUENTA.cuit}" (o ${CUENTA.cuit.replace(/-/g, '')})
-- Monto: $${montoEsperado?.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 100})
-
-Si falta cualquiera → valido: false`
+Verificá SOLO que el monto transferido sea aproximadamente $${montoEsperado?.toLocaleString('es-AR')} (tolerancia ±$${precios.tolerancia_pago || 500}).
+No importa el alias ni el CUIT destino.
+Si el monto está dentro del rango → valido: true`
           }
         ]
       }]
@@ -157,10 +157,7 @@ Si falta cualquiera → valido: false`
 
 // ── Iniciar consulta de Luna ──────────────────────────────────────────────────
 
-async function iniciarLuna(numero) {
-  const session = await getSession(numero);
-  if (session.etapa !== 'esperando_luna') return;
-
+async function iniciarLuna(numero, session) {
   session.etapa = 'con_luna';
   await saveSession(numero, session);
 
@@ -184,15 +181,34 @@ async function iniciarLuna(numero) {
 // ── Flujo principal ───────────────────────────────────────────────────────────
 
 async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
-  const session = await getSession(numero);
-  session.ultimaActividad = Date.now();
+  let session = await getSession(numero);
 
+  // Si el cliente saluda desde cero, reiniciar sesión conservando su nombre
+  const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar', 'reset'];
+  const textoLimpio = mensajeTexto?.toLowerCase().trim().replace(/[^a-záéíóúñü\s]/g, '') || '';
+  if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && session.etapa !== 'bienvenida') {
+    const nombreGuardado = session.nombre || null;
+    await deleteSession(numero);
+    session = await getSession(numero);
+    session.nombre = nombreGuardado;
+    session.esClienteNuevo = false;
+  }
+
+  session.ultimaActividad = Date.now();
   session.historialChat.push({ role: 'user', content: mensajeTexto });
 
   let respuesta = '';
 
+  // ── Si Luna debería haber entrado ya, la hacemos entrar ─────────────────────
+  if (session.etapa === 'esperando_luna' && session.lunaDebeEscribirEn && Date.now() >= session.lunaDebeEscribirEn) {
+    await saveSession(numero, session);
+    await iniciarLuna(numero, session);
+    return ''; // Luna ya mandó sus mensajes
+  }
+
   switch (session.etapa) {
 
+    // ── Bienvenida ───────────────────────────────────────────────────────────
     case 'bienvenida': {
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, true);
       respuesta = await chat(prompt, [], mensajeTexto);
@@ -200,6 +216,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
+    // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
       const servicioDetectado = await detectarServicioConIA(mensajeTexto);
 
@@ -211,10 +228,10 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const confirmacion = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después.`
+          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con entusiasmo genuino en 1 mensaje corto. PROHIBIDO: preguntar el nombre, pedir datos personales, mencionar precio, alias o datos de pago (el sistema los manda solo).`
         );
 
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame el PDF del comprobante — desde tu app bancaria usá "compartir comprobante" ✨`;
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
 
         respuesta = `${confirmacion}|||${datosPago}`;
         session.etapa = 'esperando_comprobante';
@@ -225,6 +242,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
+    // ── Esperando comprobante ────────────────────────────────────────────────
     case 'esperando_comprobante': {
       if (tieneImagen && mediaUrl) {
         session.esClienteNuevo = false;
@@ -238,7 +256,6 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         if (validacion.valido) {
           session.montosPagados.push(session.precioServicio);
           session.etapa = 'pidiendo_nombre';
-
           await new Promise(r => setTimeout(r, 800));
           await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 1000));
@@ -253,14 +270,34 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
           session.etapa = 'verificando_pago';
           await new Promise(r => setTimeout(r, 800));
-          respuesta = `hmm, no pude verificar algunos datos 🙏|||asegurate de mandar el PDF desde "compartir comprobante" en tu app, con el alias *${CUENTA.alias}* y el monto exacto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+          respuesta = `hmm, no pude verificar el monto 🙏|||asegurate de mandar una captura de pantalla del comprobante con el monto de $${session.precioServicio?.toLocaleString('es-AR')}`;
         }
       } else {
-        respuesta = `para verificar el pago necesito el PDF del comprobante 📄|||desde tu app bancaria usá "compartir comprobante" y mandámelo por acá`;
+        const servicioNuevo = await detectarServicioConIA(mensajeTexto);
+        if (servicioNuevo) {
+          session.servicio = servicioNuevo.key;
+          session.precioServicio = servicioNuevo.precio;
+          const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+          const confirmacion = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta quiere cambiar a: "${servicioNuevo.nombre || servicioNuevo.key}". Confirmalo brevemente. No preguntes el nombre. No menciones precio ni alias — el sistema los manda después.`
+          );
+          const datosPago = `*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioNuevo.precio?.toLocaleString('es-AR')}|||mandame la captura cuando hagas la transferencia ✨`;
+          respuesta = `${confirmacion}|||${datosPago}`;
+        } else {
+          const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente — si avisa que ya lo manda, decile que lo aguardás. No repitas las instrucciones de pago.`
+          );
+        }
       }
       break;
     }
 
+    // ── Verificando pago (revisión manual admin) ─────────────────────────────
     case 'verificando_pago': {
       const esAdmin = numero === formatNumero(ADMIN_WHATSAPP);
       if (esAdmin) {
@@ -277,7 +314,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           const sc = await getSession(clienteNum);
           sc.etapa = 'esperando_comprobante';
           await saveSession(clienteNum, sc);
-          await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar el PDF del comprobante con el alias *${CUENTA.alias}* y el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
+          await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar una captura con el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
           respuesta = `❌ rechazado. se pidió nuevo comprobante`;
         }
       } else {
@@ -286,6 +323,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
+    // ── Pedir nombre ─────────────────────────────────────────────────────────
     case 'pidiendo_nombre': {
       session.nombre = mensajeTexto.trim().split(' ')[0];
       session.etapa = 'pidiendo_contexto';
@@ -293,6 +331,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
+    // ── Pedir contexto para Luna ─────────────────────────────────────────────
     case 'pidiendo_contexto': {
       session.contextoPorCliente = mensajeTexto;
       session.resumenSofia = session.historialChat
@@ -301,16 +340,32 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         .join('\n');
       session.etapa = 'esperando_luna';
 
-      respuesta = `perfecto, ya le aviso ✨|||luna está terminando con alguien, en 3 minutitos te escribe ella directamente 🌙`;
-      setTimeout(() => iniciarLuna(numero), 3 * 60 * 1000);
+      // Delay aleatorio entre 30s y 3 minutos
+      const demoraSeg = Math.floor(Math.random() * (180 - 30 + 1)) + 30;
+      session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
+
+      const fraseEspera = [
+        `perfecto, ya le aviso ✨|||luna está terminando con una consulta, en un ratito te escribe ella directamente 🌙`,
+        `dale, le mando mensaje ahora ✨|||luna está con alguien, en poquito te contacta ella 🌙`,
+        `perfecto ✨|||luna está cerrando una lectura, ya te escribe directamente 🌙`,
+        `ya le aviso a luna ✨|||está terminando con alguien, en un momento te escribe ella 🌙`,
+      ];
+      respuesta = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
       break;
     }
 
+    // ── Esperando que Luna entre ─────────────────────────────────────────────
     case 'esperando_luna': {
-      respuesta = `luna está por escribirte, un momentito más 🌙`;
+      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+      respuesta = await chat(
+        prompt,
+        session.historialChat.slice(0, -1),
+        `El cliente dice: "${mensajeTexto}". Luna todavía no entró a la conversación, está terminando con otra persona. Respondé naturalmente según lo que dijo — si pregunta cuánto falta, tranquilizalo con calidez; si está impaciente, reconocé la espera. No repitas siempre la misma frase.`
+      );
       break;
     }
 
+    // ── Luna atiende ─────────────────────────────────────────────────────────
     case 'con_luna': {
       if (!session.historialConsulta) {
         session.historialConsulta = mensajeTexto;
@@ -366,6 +421,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
+    // ── Upsell post-consulta ─────────────────────────────────────────────────
     case 'upsell': {
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas,
@@ -440,11 +496,11 @@ module.exports = async function handler(req, res) {
       mediaUrl = msg.document?.link;
       mensajeTexto = msg.document?.caption || '';
     } else {
-      // Tipo no manejado (sticker, audio, etc.)
+      // Tipo no manejado (sticker, audio, video, etc.)
       return res.status(200).json({ status: 'ok' });
     }
 
-    if (!numero || !mensajeTexto && !tieneImagen) {
+    if (!numero || (!mensajeTexto && !tieneImagen)) {
       return res.status(200).json({ status: 'ok' });
     }
 
