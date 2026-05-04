@@ -1,22 +1,35 @@
 const { getSession, saveSession } = require('../lib/session-store');
 const { getLunaPrompt } = require('../config/prompts');
 const { chat } = require('../lib/anthropic');
-const twilio = require('twilio');
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+const WHAPI_URL = 'https://gate.whapi.cloud';
 
-function whatsappFrom() {
-  const num = process.env.TWILIO_WHATSAPP_NUMBER || '';
-  return num.startsWith('whatsapp:') ? num : `whatsapp:${num}`;
+function formatNumero(numero) {
+  if (!numero) return '';
+  if (numero.includes('@')) return numero;
+  return `${numero.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+}
+
+async function enviarMensaje(numero, texto) {
+  const to = formatNumero(numero);
+  const res = await fetch(`${WHAPI_URL}/messages/text`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WHAPI_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ to, body: texto })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Whapi error: ${res.status} ${err}`);
+  }
 }
 
 async function enviarMensajesMultiples(numero, respuesta) {
   const partes = respuesta.split('|||').map(p => p.trim()).filter(p => p.length > 0);
   for (let i = 0; i < partes.length; i++) {
-    await twilioClient.messages.create({ from: whatsappFrom(), to: numero, body: partes[i] });
+    await enviarMensaje(numero, partes[i]);
     if (i < partes.length - 1) await new Promise(r => setTimeout(r, 1200));
   }
 }
@@ -55,11 +68,19 @@ module.exports = async function handler(req, res) {
         contextoDadoPorCliente: session.contextoPorCliente
       });
 
+      const contextoConocido = session.contextoPorCliente
+        ? `Ya sabés que quiere: "${session.contextoPorCliente}".`
+        : session.resumenSofia
+          ? `Ya hablaste con Sofía y sabés el contexto.`
+          : '';
+
       const mensajeLuna = await chat(
         prompt, [],
-        `La clienta acaba de pagar por "${session.servicio}". ${session.contextoPorCliente ? `Quiere que sepas: "${session.contextoPorCliente}".` : ''} Presentate como Luna de forma cálida y natural, y preguntale sobre qué quiere consultar. Usá ||| para separar mensajes.`
+        `Presentate como Luna de forma cálida. ${contextoConocido} Arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`
       );
 
+      session.historialChat.push({ role: 'assistant', content: mensajeLuna });
+      await saveSession(numero, session);
       await enviarMensajesMultiples(numero, mensajeLuna);
       procesados++;
     }

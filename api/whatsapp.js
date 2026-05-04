@@ -251,6 +251,8 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     : `Presentate como Luna de forma cálida. ${contextoConocido} Arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`;
 
   const mensajeLuna = await chat(prompt, [], instruccion);
+  session.historialChat.push({ role: 'assistant', content: mensajeLuna });
+  await saveSession(numero, session);
   await enviarMensajesMultiples(numero, mensajeLuna);
 }
 
@@ -540,7 +542,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         session.historialConsulta = mensajeTexto;
       }
 
-      const necesitaCartas = session.servicio?.includes('tirada') && session.cartasLanzadas.length === 0;
+      const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
 
       if (!session.lunaRecopiloData) {
         // PASO 1 (todos los servicios): Luna pide datos biográficos
