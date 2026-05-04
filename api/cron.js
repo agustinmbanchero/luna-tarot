@@ -22,12 +22,14 @@ async function enviarMensajesMultiples(numero, respuesta) {
 }
 
 module.exports = async function handler(req, res) {
-  // Solo permitir llamadas desde Vercel Cron (o localhost para tests)
-  const host = req.headers['host'] || '';
-  const isVercel = req.headers['x-vercel-id'] || req.headers['x-vercel-deployment-url'];
-  const isLocal = host.includes('localhost');
-  if (!isVercel && !isLocal) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  // Vercel Cron autentica con Authorization: Bearer $CRON_SECRET
+  // Si no hay CRON_SECRET configurado, dejamos pasar (solo desde Vercel)
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const auth = req.headers['authorization'];
+    if (auth !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   }
 
   const { getPendingLunaSessions } = require('../lib/session-store');
