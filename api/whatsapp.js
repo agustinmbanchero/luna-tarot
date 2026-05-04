@@ -369,6 +369,23 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         break;
       }
 
+      // Primero: ¿nombró un servicio concreto por nombre? → ignorar sugeridos, usar ese
+      const servicioExplicito = await detectarServicioConIA(mensajeTexto);
+      if (servicioExplicito) {
+        session.servicio = servicioExplicito.key;
+        session.precioServicio = servicioExplicito.precio;
+        session.etapa = 'esperando_comprobante';
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        const confirmacion = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta eligió: "${servicioExplicito.nombre}". Confirmalo en 1 oración corta y entusiasta. PROHIBIDO: pedir nombre, pedir contexto, preguntar por Luna, mencionar precio o alias.`
+        );
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioExplicito.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
+        respuesta = `${confirmacion}|||${datosPago}`;
+        break;
+      }
+
       const seleccionados = await detectarServiciosSeleccionados(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
