@@ -381,11 +381,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         if (validacion.valido) {
           session.montosPagados.push(session.precioServicio);
-          session.etapa = 'pidiendo_nombre';
           await new Promise(r => setTimeout(r, 800));
           await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 1000));
-          respuesta = `¿cómo te llamo para avisarle a luna?`;
+          if (session.nombre) {
+            session.etapa = 'pidiendo_contexto';
+            respuesta = `¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
+          } else {
+            session.etapa = 'pidiendo_nombre';
+            respuesta = `¿cómo te llamo para avisarle a luna?`;
+          }
         } else {
           try {
             await enviarMensaje(
@@ -430,10 +435,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         if (mensajeTexto.toUpperCase().startsWith('APROBAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
           const sc = await getSession(clienteNum);
-          sc.etapa = 'pidiendo_nombre';
           sc.montosPagados.push(sc.precioServicio);
-          await saveSession(clienteNum, sc);
-          await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿cómo te llamo para avisarle a luna?`);
+          if (sc.nombre) {
+            sc.etapa = 'pidiendo_contexto';
+            await saveSession(clienteNum, sc);
+            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`);
+          } else {
+            sc.etapa = 'pidiendo_nombre';
+            await saveSession(clienteNum, sc);
+            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿cómo te llamo para avisarle a luna?`);
+          }
           respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
@@ -471,10 +482,10 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
 
       const fraseEspera = [
-        `perfecto, ya le aviso ✨|||luna está terminando con una consulta, en un ratito te escribe ella directamente 🌙`,
-        `dale, le mando mensaje ahora ✨|||luna está con alguien, en poquito te contacta ella 🌙`,
-        `perfecto ✨|||luna está cerrando una lectura, ya te escribe directamente 🌙`,
-        `ya le aviso a luna ✨|||está terminando con alguien, en un momento te escribe ella 🌙`,
+        `perfecto, ya le aviso ✨|||luna está terminando con una consulta — en 1 o 2 minutos escribime cualquier cosa y te la paso directamente 🌙`,
+        `dale, le mando mensaje ahora ✨|||está cerrando con alguien, en un ratito escribime y te conecto con ella 🌙`,
+        `perfecto ✨|||luna está en una lectura, en poquito escribime y te la paso 🌙`,
+        `ya le aviso ✨|||está terminando con alguien — en un momento escribime y te conecto con luna 🌙`,
       ];
       respuesta = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
       break;
@@ -486,7 +497,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       respuesta = await chat(
         prompt,
         session.historialChat.slice(0, -1),
-        `El cliente dice: "${mensajeTexto}". Luna todavía no entró a la conversación, está terminando con otra persona. Respondé naturalmente según lo que dijo — si pregunta cuánto falta, tranquilizalo con calidez; si está impaciente, reconocé la espera. No repitas siempre la misma frase.`
+        `El cliente dice: "${mensajeTexto}". Luna todavía no entró. Respondé naturalmente y siempre terminá diciéndole que en un momento le escriba de nuevo para conectarla ("en un ratito escribime y te la paso", "ya falta poco, escribime en un momento"). Nunca digas que Luna va a escribir sola — el cliente tiene que mandar un mensaje para conectarse.`
       );
       break;
     }
