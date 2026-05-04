@@ -286,6 +286,14 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
+      // Si está pidiendo el menú/listado, Sofía lo muestra directo sin detectar servicio
+      const pidieronMenu = /list[ao]|menú|menu|todo[s]? lo que|qué tienen|que tienen|ver todo|todas las opciones|opciones|todo lo|dame todo|mostrame todo/i.test(mensajeTexto);
+      if (pidieronMenu) {
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        break;
+      }
+
       const sugeridos = await sugerirServiciosConIA(mensajeTexto);
 
       if (sugeridos && sugeridos.length > 0) {
@@ -312,6 +320,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     // ── Confirmando elección de servicios ────────────────────────────────────
     case 'confirmando_eleccion': {
       const sugeridos = session.serviciosSugeridos || [];
+
+      // Si pide el menú completo, Sofía lo muestra y volvemos a esperar elección
+      const pidieronMenu = /list[ao]|menú|menu|todo[s]? lo que|qué tienen|que tienen|ver todo|todas las opciones|opciones|todo lo|dame todo|mostrame todo/i.test(mensajeTexto);
+      if (pidieronMenu) {
+        session.etapa = 'esperando_eleccion';
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        break;
+      }
+
       const seleccionados = await detectarServiciosSeleccionados(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
