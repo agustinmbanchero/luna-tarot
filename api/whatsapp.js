@@ -240,9 +240,15 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     contextoDadoPorCliente: session.contextoPorCliente
   });
 
+  const contextoConocido = session.contextoPorCliente
+    ? `Ya sabés que quiere: "${session.contextoPorCliente}".`
+    : session.resumenSofia
+      ? `Ya hablaste con Sofía y sabés el contexto.`
+      : '';
+
   const instruccion = mensajeClienteMientrasEsperaba
-    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. Empezá con algo breve y natural tipo "disculpá la demora" sin hacer drama, luego presentate como Luna y preguntale qué lo trajo acá. Sin emojis. Usá ||| para separar mensajes.`
-    : `La clienta acaba de pagar por "${session.servicio}". ${session.contextoPorCliente ? `Quiere que sepas: "${session.contextoPorCliente}".` : ''} Presentate como Luna de forma cálida y natural, y preguntale sobre qué quiere consultar. Sin emojis. Usá ||| para separar mensajes.`;
+    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. ${contextoConocido} Empezá con algo breve tipo "disculpá la demora" sin drama, presentate como Luna, y arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`
+    : `Presentate como Luna de forma cálida. ${contextoConocido} Arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`;
 
   const mensajeLuna = await chat(prompt, [], instruccion);
   await enviarMensajesMultiples(numero, mensajeLuna);
