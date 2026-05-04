@@ -287,7 +287,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      // Si está pidiendo el menú/listado, Sofía lo muestra directo sin detectar servicio
+      // Si está pidiendo el menú/listado, Sofía lo muestra directo
       const pidieronMenu = /list[ao]|menú|menu|todo[s]? lo que|qué tienen|que tienen|ver todo|todas las opciones|opciones|todo lo|dame todo|mostrame todo/i.test(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
@@ -295,8 +295,26 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         break;
       }
 
-      const sugeridos = await sugerirServiciosConIA(mensajeTexto);
+      // Primero: ¿eligió un servicio concreto? → pago directo por código
+      const servicioElegido = await detectarServicioConIA(mensajeTexto);
+      if (servicioElegido) {
+        session.servicio = servicioElegido.key;
+        session.precioServicio = servicioElegido.precio;
+        session.etapa = 'esperando_comprobante';
 
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        const confirmacion = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta eligió: "${servicioElegido.nombre}". Confirmalo en 1 oración corta y entusiasta. PROHIBIDO: pedir nombre, pedir contexto, preguntar por Luna, mencionar precio o alias.`
+        );
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioElegido.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
+        respuesta = `${confirmacion}|||${datosPago}`;
+        break;
+      }
+
+      // Segundo: describe una situación → sugerir 2-3 opciones, esperar confirmación
+      const sugeridos = await sugerirServiciosConIA(mensajeTexto);
       if (sugeridos && sugeridos.length > 0) {
         session.serviciosSugeridos = sugeridos;
         session.etapa = 'confirmando_eleccion';
@@ -309,7 +327,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta describió: "${mensajeTexto}". Sugeríle estos servicios explicando brevemente por qué cada uno le vendría bien:\n${descripcionServicios}\nTerminá preguntando si le interesa alguno o si quiere combinar varios. PROHIBIDO: confirmar que eligió algo, mencionar precios, mencionar el alias, pedir datos de pago, preguntar por Luna, preguntar el nombre. Solo presentar opciones y preguntar cuál le interesa.`
+          `La clienta describió: "${mensajeTexto}". Sugeríle estas opciones explicando brevemente por qué le vendrían bien:\n${descripcionServicios}\nTerminá con una pregunta corta: cuál le resuena más o si quiere combinar. PROHIBIDO ABSOLUTAMENTE: confirmar que eligió, mencionar alias, pedir pago, preguntar nombre, preguntar por Luna.`
         );
       } else {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
