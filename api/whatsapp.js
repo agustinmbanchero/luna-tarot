@@ -448,8 +448,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         .join('\n');
       session.etapa = 'esperando_luna';
 
-      // Delay aleatorio entre 30s y 3 minutos
-      const demoraSeg = Math.floor(Math.random() * (180 - 30 + 1)) + 30;
+      // Delay aleatorio entre 1 y 2 minutos
+      const demoraSeg = Math.floor(Math.random() * 61) + 60;
       session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
 
       const fraseEspera = [
@@ -479,22 +479,44 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         session.historialConsulta = mensajeTexto;
       }
 
-      const tema = detectarTema(mensajeTexto);
       const necesitaCartas = session.servicio?.includes('tirada') && session.cartasLanzadas.length === 0;
 
-      if (necesitaCartas) {
-        const cantidadCartas = session.servicio === 'tirada_completa' ? 7 : 3;
-        session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
+      if (necesitaCartas && !session.lunaRecopiloData) {
+        // Paso 1: Luna pide datos biográficos antes de tirar cartas
+        session.lunaRecopiloData = false; // marcamos que estamos esperando datos
+        const prompt = getLunaPrompt({
+          cartasIds: [],
+          nombreCliente: session.nombre,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta dijo: "${mensajeTexto}". Antes de tirar las cartas, necesitás sus datos para centrar la lectura. Pedíle de forma natural: fecha de nacimiento (día, mes, año), signo del zodíaco si lo sabe, y nombre completo si no lo tenés. Un mensaje corto, sin listar todo de golpe.`
+        );
+        session.lunaRecopiloData = true; // próximo mensaje ya tiene los datos
+      } else if (necesitaCartas && session.lunaRecopiloData) {
+        // Paso 2: ya tiene los datos, ahora tira cartas
+        session.datosBiograficos = mensajeTexto;
 
-        await enviarMensaje(numero, `dame un ratito que me concentro... 🌙`);
-        await new Promise(r => setTimeout(r, 3000));
+        const tema = detectarTema(session.historialConsulta || mensajeTexto);
+        const cantidadCartas = session.servicio?.includes('completa') ? 7 : 3;
+
+        // Guardar cartas en sesión ANTES de los delays para evitar duplicados
+        session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
+        await saveSession(numero, session);
+
+        await enviarMensaje(numero, `bien, ya tengo todo lo que necesito`);
+        await new Promise(r => setTimeout(r, 2000));
 
         for (let i = 0; i < session.cartasLanzadas.length; i++) {
           const carta = session.cartasLanzadas[i];
           try {
             await enviarImagen(numero, urlCarta(carta), nombreCarta(carta));
           } catch (e) {
-            await enviarMensaje(numero, `🔮 ${nombreCarta(carta)}`);
+            await enviarMensaje(numero, nombreCarta(carta));
           }
           if (i < session.cartasLanzadas.length - 1) {
             await new Promise(r => setTimeout(r, 2000));
@@ -513,7 +535,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta pregunta: "${mensajeTexto}". Las cartas que salieron son: ${nombresCartas.join(', ')}. Hacé la lectura completa, conectando las cartas entre sí. Usá ||| para separar en mensajes cortos.`
+          `La clienta consulta sobre: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Las cartas son: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas entre sí. Usá ||| para separar en mensajes cortos.`
         );
         session.etapa = 'upsell';
       } else {
