@@ -501,8 +501,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         .join('\n');
       session.etapa = 'esperando_luna';
 
-      // Delay aleatorio entre 1 y 2 minutos
-      const demoraSeg = Math.floor(Math.random() * 61) + 60;
+      // Delay aleatorio entre 30s y 2 minutos
+      const demoraSeg = Math.floor(Math.random() * 91) + 30;
       session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
 
       const fraseEspera = [
