@@ -263,9 +263,17 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
   // Reiniciar sesión solo si está trabado en pago (no cuando Luna ya está atendiendo)
   const etapasReiniciables = ['esperando_comprobante', 'verificando_pago'];
-  const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar', 'reset'];
+  const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar'];
   const textoLimpio = mensajeTexto?.toLowerCase().trim().replace(/[^a-záéíóúñü\s]/g, '') || '';
-  if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && etapasReiniciables.includes(session.etapa)) {
+
+  // "reset" reinicia desde cualquier etapa (útil para testing)
+  if (textoLimpio === 'reset') {
+    const nombreGuardado = session.nombre || null;
+    await deleteSession(numero);
+    session = await getSession(numero);
+    session.nombre = nombreGuardado;
+    session.esClienteNuevo = false;
+  } else if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && etapasReiniciables.includes(session.etapa)) {
     const nombreGuardado = session.nombre || null;
     await deleteSession(numero);
     session = await getSession(numero);
