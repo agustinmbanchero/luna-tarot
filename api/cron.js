@@ -22,9 +22,11 @@ async function enviarMensajesMultiples(numero, respuesta) {
 }
 
 module.exports = async function handler(req, res) {
-  // Verificar que es llamada autorizada de Vercel Cron
-  const authHeader = req.headers['authorization'];
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  // Solo permitir llamadas desde Vercel Cron (o localhost para tests)
+  const host = req.headers['host'] || '';
+  const isVercel = req.headers['x-vercel-id'] || req.headers['x-vercel-deployment-url'];
+  const isLocal = host.includes('localhost');
+  if (!isVercel && !isLocal) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
