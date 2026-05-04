@@ -1,17 +1,13 @@
-const twilio = require('twilio');
 const Anthropic = require('@anthropic-ai/sdk');
 const { getSession, saveSession } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
-const { getSofiaPrompt, getLunaPrompt, esNoche } = require('../config/prompts');
+const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
 const precios = require('../config/precios.json');
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const WHAPI_URL = 'https://gate.whapi.cloud';
 
 const CUENTA = {
   alias: process.env.ALIAS || 'estudiolunatarot',
@@ -19,21 +15,33 @@ const CUENTA = {
   titular: process.env.TITULAR || 'Ezequiel Mosquera'
 };
 
-const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '+5491132851143';
+const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || '5491132851143';
+
+// ── Formato de número ─────────────────────────────────────────────────────────
+
+function formatNumero(numero) {
+  if (!numero) return '';
+  if (numero.includes('@')) return numero;
+  const limpio = numero.replace(/[^0-9]/g, '');
+  return `${limpio}@s.whatsapp.net`;
+}
 
 // ── Helpers de envío ──────────────────────────────────────────────────────────
 
-function whatsappFrom() {
-  const num = process.env.TWILIO_WHATSAPP_NUMBER || '';
-  return num.startsWith('whatsapp:') ? num : `whatsapp:${num}`;
-}
-
 async function enviarMensaje(numero, texto) {
-  await twilioClient.messages.create({
-    from: whatsappFrom(),
-    to: numero,
-    body: texto
+  const to = formatNumero(numero);
+  const res = await fetch(`${WHAPI_URL}/messages/text`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WHAPI_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ to, body: texto })
   });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Whapi error: ${res.status} ${err}`);
+  }
 }
 
 async function enviarMensajesMultiples(numero, respuesta) {
@@ -51,18 +59,19 @@ async function enviarMensajesMultiples(numero, respuesta) {
 }
 
 async function enviarImagen(numero, urlImagen, caption = '') {
-  await twilioClient.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: numero,
-    mediaUrl: [urlImagen],
-    body: caption
+  const to = formatNumero(numero);
+  await fetch(`${WHAPI_URL}/messages/image`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.WHAPI_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ to, media: urlImagen, caption })
   });
 }
 
 function urlCarta(cartaId) {
-  const base = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : process.env.BASE_URL || 'http://localhost:3000';
+  const base = process.env.BASE_URL || 'https://luna-tarot-liart.vercel.app';
   return `${base}/public/cartas/${cartaId}.jpg`;
 }
 
@@ -90,7 +99,6 @@ Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" 
 
   const key = response.content[0].text.trim().toLowerCase().replace(/[^a-z_]/g, '');
 
-  // Buscar en todos los catálogos
   const todos = {
     ...precios.servicios,
     ...precios.packs_combinados,
@@ -101,19 +109,18 @@ Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" 
   return null;
 }
 
-// ── Validación de comprobante PDF/imagen con Claude ───────────────────────────
+// ── Validación de comprobante con Claude ──────────────────────────────────────
 
 async function validarComprobante(mediaUrl, montoEsperado) {
   try {
-    const authStr = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+    // Descargar el archivo (Whapi requiere el token)
     const response = await fetch(mediaUrl, {
-      headers: { Authorization: `Basic ${authStr}` }
+      headers: { Authorization: `Bearer ${process.env.WHAPI_TOKEN}` }
     });
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
-
     const mediaType = contentType.includes('pdf') ? 'application/pdf' : contentType;
 
     const result = await anthropic.messages.create({
@@ -180,16 +187,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   const session = await getSession(numero);
   session.ultimaActividad = Date.now();
 
-  const esNuevoMensaje = session.etapa === 'bienvenida';
-
-  // Agregar al historial
   session.historialChat.push({ role: 'user', content: mensajeTexto });
 
   let respuesta = '';
 
   switch (session.etapa) {
 
-    // ── Bienvenida ───────────────────────────────────────────────────────────
     case 'bienvenida': {
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, true);
       respuesta = await chat(prompt, [], mensajeTexto);
@@ -197,17 +200,13 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
-    // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      // Intentar detectar servicio con IA
       const servicioDetectado = await detectarServicioConIA(mensajeTexto);
 
       if (servicioDetectado) {
         session.servicio = servicioDetectado.key;
         session.precioServicio = servicioDetectado.precio;
-        session.etapa = 'confirmando_servicio';
 
-        // Sofía confirma con su voz natural
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         const confirmacion = await chat(
           prompt,
@@ -215,21 +214,17 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con tu voz natural y entusiasmo genuino (1 mensaje corto). No menciones el precio ni los datos de pago — eso lo manda el sistema automáticamente después.`
         );
 
-        // Confirmación de Sofía + datos de pago separados
-        const alias = CUENTA.alias;
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame el PDF del comprobante — desde tu app bancaria usá "compartir comprobante" ✨`;
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame el PDF del comprobante — desde tu app bancaria usá "compartir comprobante" ✨`;
 
         respuesta = `${confirmacion}|||${datosPago}`;
         session.etapa = 'esperando_comprobante';
       } else {
-        // Sofía ayuda a elegir con contexto completo
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
       }
       break;
     }
 
-    // ── Esperando comprobante ────────────────────────────────────────────────
     case 'esperando_comprobante': {
       if (tieneImagen && mediaUrl) {
         session.esClienteNuevo = false;
@@ -249,10 +244,9 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           await new Promise(r => setTimeout(r, 1000));
           respuesta = `¿cómo te llamo para avisarle a luna?`;
         } else {
-          // Notificar admin para revisión manual
           try {
             await enviarMensaje(
-              `whatsapp:${ADMIN_WHATSAPP}`,
+              ADMIN_WHATSAPP,
               `⚠️ *Comprobante no validado*\nCliente: ${numero}\nServicio: ${session.servicio}\nMonto esperado: $${session.precioServicio?.toLocaleString('es-AR')}\nMotivo: ${validacion.motivo}\n\nRespondé:\n✅ APROBAR ${numero}\n❌ RECHAZAR ${numero}`
             );
           } catch (e) { console.error('Error notif admin:', e); }
@@ -267,9 +261,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
-    // ── Verificando pago (revisión manual admin) ─────────────────────────────
     case 'verificando_pago': {
-      const esAdmin = numero === `whatsapp:${ADMIN_WHATSAPP}`;
+      const esAdmin = numero === formatNumero(ADMIN_WHATSAPP);
       if (esAdmin) {
         if (mensajeTexto.toUpperCase().startsWith('APROBAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
@@ -293,15 +286,13 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
-    // ── Pedir nombre ─────────────────────────────────────────────────────────
     case 'pidiendo_nombre': {
-      session.nombre = mensajeTexto.trim().split(' ')[0]; // Solo el primer nombre
+      session.nombre = mensajeTexto.trim().split(' ')[0];
       session.etapa = 'pidiendo_contexto';
       respuesta = `un gusto, ${session.nombre} 🌙|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
       break;
     }
 
-    // ── Pedir contexto para Luna ─────────────────────────────────────────────
     case 'pidiendo_contexto': {
       session.contextoPorCliente = mensajeTexto;
       session.resumenSofia = session.historialChat
@@ -311,19 +302,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       session.etapa = 'esperando_luna';
 
       respuesta = `perfecto, ya le aviso ✨|||luna está terminando con alguien, en 3 minutitos te escribe ella directamente 🌙`;
-
-      // Luna entra en 3 minutos
       setTimeout(() => iniciarLuna(numero), 3 * 60 * 1000);
       break;
     }
 
-    // ── Esperando que Luna entre ─────────────────────────────────────────────
     case 'esperando_luna': {
       respuesta = `luna está por escribirte, un momentito más 🌙`;
       break;
     }
 
-    // ── Luna atiende ─────────────────────────────────────────────────────────
     case 'con_luna': {
       if (!session.historialConsulta) {
         session.historialConsulta = mensajeTexto;
@@ -379,7 +366,6 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
-    // ── Upsell post-consulta ─────────────────────────────────────────────────
     case 'upsell': {
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas,
@@ -424,12 +410,43 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = req.body;
-    const numero = body.From;
-    const mensajeTexto = body.Body || '';
-    const tieneImagen = body.NumMedia && parseInt(body.NumMedia) > 0;
-    const mediaUrl = body.MediaUrl0 || null;
 
-    if (!numero) return res.status(400).send('');
+    // Whapi manda un array de mensajes
+    const mensajes = body.messages;
+    if (!mensajes || mensajes.length === 0) {
+      return res.status(200).json({ status: 'ok' });
+    }
+
+    const msg = mensajes[0];
+
+    // Ignorar mensajes propios del bot
+    if (msg.from_me) return res.status(200).json({ status: 'ok' });
+
+    const numero = msg.from; // formato: 5491112345678@s.whatsapp.net
+    const tipo = msg.type;
+
+    let mensajeTexto = '';
+    let tieneImagen = false;
+    let mediaUrl = null;
+
+    if (tipo === 'text') {
+      mensajeTexto = msg.text?.body || '';
+    } else if (tipo === 'image') {
+      tieneImagen = true;
+      mediaUrl = msg.image?.link;
+      mensajeTexto = msg.image?.caption || '';
+    } else if (tipo === 'document') {
+      tieneImagen = true;
+      mediaUrl = msg.document?.link;
+      mensajeTexto = msg.document?.caption || '';
+    } else {
+      // Tipo no manejado (sticker, audio, etc.)
+      return res.status(200).json({ status: 'ok' });
+    }
+
+    if (!numero || !mensajeTexto && !tieneImagen) {
+      return res.status(200).json({ status: 'ok' });
+    }
 
     const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl);
 
@@ -437,12 +454,10 @@ module.exports = async function handler(req, res) {
       await enviarMensajesMultiples(numero, respuesta);
     }
 
-    res.setHeader('Content-Type', 'text/xml');
-    res.status(200).send('<Response></Response>');
+    res.status(200).json({ status: 'ok' });
 
   } catch (error) {
     console.error('Error en webhook:', error);
-    res.setHeader('Content-Type', 'text/xml');
-    res.status(200).send('<Response></Response>');
+    res.status(200).json({ status: 'error', message: error.message });
   }
 };
