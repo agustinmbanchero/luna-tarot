@@ -109,6 +109,75 @@ Respondé SOLO con el key exacto del servicio (ej: "tirada_simple") o "ninguno" 
   return null;
 }
 
+// ── Sugerir 2-3 servicios según la situación del cliente ─────────────────────
+
+async function sugerirServiciosConIA(mensajeTexto) {
+  const todos = {
+    ...precios.servicios,
+    ...precios.packs_combinados,
+    ...precios.packs_preguntas
+  };
+
+  const lista = Object.entries(todos)
+    .map(([key, val]) => `${key}: ${val.nombre} — ${val.descripcion || val.incluye || ''} ($${val.precio?.toLocaleString('es-AR')})`)
+    .join('\n');
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 100,
+    messages: [{
+      role: 'user',
+      content: `La clienta describió su situación: "${mensajeTexto}"
+
+Servicios disponibles:
+${lista}
+
+Elegí los 2 o 3 servicios MÁS relevantes para lo que describió. Si hay un pack combinado que le convenga mejor, priorizalo.
+
+Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_caminos`
+    }]
+  });
+
+  const keys = response.content[0].text.trim().toLowerCase()
+    .replace(/[^a-z_,]/g, '')
+    .split(',')
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const resultado = keys.map(key => todos[key] ? { key, ...todos[key] } : null).filter(Boolean);
+  return resultado.length > 0 ? resultado : null;
+}
+
+// ── Detectar cuáles servicios confirmó el cliente ────────────────────────────
+
+async function detectarServiciosSeleccionados(mensajeTexto, serviciosSugeridos) {
+  const lista = serviciosSugeridos.map((s, i) =>
+    `${i + 1}. ${s.key}: ${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`
+  ).join('\n');
+
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 100,
+    messages: [{
+      role: 'user',
+      content: `La clienta dijo: "${mensajeTexto}"
+
+Los servicios que se le ofrecieron:
+${lista}
+
+¿Cuáles está eligiendo? Respondé SOLO con los keys separados por coma, o "todos" si quiere todos, o "ninguno" si todavía no confirmó ninguno.`
+    }]
+  });
+
+  const resp = response.content[0].text.trim().toLowerCase().replace(/\s/g, '');
+
+  if (resp.includes('todos')) return serviciosSugeridos;
+  if (resp.includes('ninguno')) return [];
+
+  const keys = resp.replace(/[^a-z_,]/g, '').split(',').filter(Boolean);
+  return serviciosSugeridos.filter(s => keys.includes(s.key));
+}
+
 // ── Validación de comprobante con Claude ──────────────────────────────────────
 
 async function validarComprobante(mediaUrl, montoEsperado) {
@@ -218,26 +287,65 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      const servicioDetectado = await detectarServicioConIA(mensajeTexto);
+      const sugeridos = await sugerirServiciosConIA(mensajeTexto);
 
-      if (servicioDetectado) {
-        session.servicio = servicioDetectado.key;
-        session.precioServicio = servicioDetectado.precio;
+      if (sugeridos && sugeridos.length > 0) {
+        session.serviciosSugeridos = sugeridos;
+        session.etapa = 'confirmando_eleccion';
+
+        const descripcionServicios = sugeridos.map(s =>
+          `- *${s.nombre}*: ${s.descripcion || s.incluye || ''} → $${s.precio?.toLocaleString('es-AR')}`
+        ).join('\n');
+
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta describió: "${mensajeTexto}". Sugeríle estos servicios de forma cálida, explicando brevemente por qué cada uno le vendría bien según lo que contó:\n${descripcionServicios}\nPreguntale si le interesa alguno o si quiere combinarlos. No menciones precios todavía. Usá ||| para separar mensajes si hace falta.`
+        );
+      } else {
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+      }
+      break;
+    }
+
+    // ── Confirmando elección de servicios ────────────────────────────────────
+    case 'confirmando_eleccion': {
+      const sugeridos = session.serviciosSugeridos || [];
+      const seleccionados = await detectarServiciosSeleccionados(mensajeTexto, sugeridos);
+
+      if (seleccionados && seleccionados.length > 0) {
+        const total = seleccionados.reduce((acc, s) => acc + (s.precio || 0), 0);
+        const nombresServicios = seleccionados.map(s => s.nombre).join(' + ');
+
+        session.serviciosSeleccionados = seleccionados;
+        session.servicio = nombresServicios;
+        session.precioServicio = total;
+        session.etapa = 'esperando_comprobante';
 
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         const confirmacion = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioDetectado.nombre || servicioDetectado.key}". Confirmalo con entusiasmo genuino en 1 mensaje corto. PROHIBIDO: preguntar el nombre, pedir datos personales, mencionar precio, alias o datos de pago (el sistema los manda solo).`
+          `La clienta eligió: ${nombresServicios}. Confirmalo con entusiasmo en 1 mensaje corto. No preguntes el nombre. No menciones precio ni alias (el sistema los manda).`
         );
 
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioDetectado.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
+        const resumenServicios = seleccionados.length > 1
+          ? seleccionados.map(s => `• ${s.nombre}: $${s.precio?.toLocaleString('es-AR')}`).join('\n') + `\n*Total: $${total.toLocaleString('es-AR')}*`
+          : `*Monto exacto:* $${total.toLocaleString('es-AR')}`;
+
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||${resumenServicios}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
 
         respuesta = `${confirmacion}|||${datosPago}`;
-        session.etapa = 'esperando_comprobante';
       } else {
+        // No confirmó nada todavía, seguir conversando
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta dice: "${mensajeTexto}". Estás esperando que confirme qué servicio(s) quiere de los que le ofreciste: ${sugeridos.map(s => s.nombre).join(', ')}. Respondé naturalmente según lo que dijo.`
+        );
       }
       break;
     }
