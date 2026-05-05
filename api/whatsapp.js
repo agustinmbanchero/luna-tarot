@@ -672,12 +672,26 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
-        const nombresCartas = session.cartasLanzadas.map(nombreCarta);
+        const esCompleta = cantidadCartas === 7;
+        const posicionesCompleta = [
+          'raíz / qué te trajo hasta acá',
+          'presente / la energía actual',
+          'obstáculo / lo que se cruza',
+          'fortaleza / con qué contás',
+          'influencias / qué viene desde afuera',
+          'próximos pasos / el camino inmediato',
+          'resultado / hacia dónde lleva todo'
+        ];
+        const posicionesSimple = ['pasado', 'presente', 'futuro'];
+        const posiciones = esCompleta ? posicionesCompleta : posicionesSimple;
+        const cartasConPosicion = session.cartasLanzadas
+          .map((id, i) => `${i + 1}. ${posiciones[i]}: ${nombreCarta(id)}`)
+          .join('\n');
         const datosClienteTirada = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
         respuesta = await chat(
           promptTirada,
           session.historialChat.slice(0, -1),
-          `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado} Cartas: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas entre sí. Sin emojis. Usá ||| para separar mensajes.`
+          `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`
         );
         session.etapa = 'upsell';
       } else if (!session.datosBiograficos) {
@@ -696,7 +710,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: "${session.historialConsulta}".${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Sin emojis. Usá ||| para separar mensajes.`
+          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: "${session.historialConsulta}".${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
         );
         session.etapa = 'upsell';
       } else {
