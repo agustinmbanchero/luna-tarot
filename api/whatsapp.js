@@ -71,8 +71,7 @@ async function enviarImagen(numero, urlImagen, caption = '') {
 }
 
 function urlCarta(cartaId) {
-  const base = process.env.BASE_URL || 'https://luna-tarot-liart.vercel.app';
-  return `${base}/cartas/${cartaId}.jpg`;
+  return `https://raw.githubusercontent.com/agustinmbanchero/luna-tarot/main/public/cartas/${cartaId}.jpg`;
 }
 
 // ── Detección de servicio con Claude ─────────────────────────────────────────
