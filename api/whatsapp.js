@@ -72,7 +72,7 @@ async function enviarImagen(numero, urlImagen, caption = '') {
 
 function urlCarta(cartaId) {
   const base = process.env.BASE_URL || 'https://luna-tarot-liart.vercel.app';
-  return `${base}/public/cartas/${cartaId}.jpg`;
+  return `${base}/cartas/${cartaId}.jpg`;
 }
 
 // ── Detección de servicio con Claude ─────────────────────────────────────────
@@ -661,7 +661,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         await saveSession(numero, session);
 
         await enviarMensaje(numero, `bien, ya tengo todo lo que necesito`);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 800));
 
         for (let i = 0; i < session.cartasLanzadas.length; i++) {
           const carta = session.cartasLanzadas[i];
@@ -671,7 +671,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             await enviarMensaje(numero, nombreCarta(carta));
           }
           if (i < session.cartasLanzadas.length - 1) {
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 800));
           }
         }
 
