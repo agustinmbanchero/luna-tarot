@@ -58,15 +58,19 @@ module.exports = async function handler(req, res) {
 
       // Iniciar Luna
       session.etapa = 'con_luna';
-      // Luna pedirá datos en su primer mensaje → cuando el cliente responda se hace la lectura
+      // Sofía ya recopiló los datos. Luna los corrobora y pregunta si hay algo más antes de arrancar.
       session.lunaRecopiloData = true;
       await saveSession(numero, session);
 
-      const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
-        || (session.servicio || '').toLowerCase().includes('carta astral');
-      const pedidoDatos = esCartaAstral
-        ? 'nombre completo, fecha de nacimiento (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
-        : 'nombre completo y fecha de nacimiento (día, mes y año)';
+      const nombreMostrar = session.nombreCompleto || session.nombre || '';
+      const datosTexto = [
+        nombreMostrar,
+        session.fechaNacimiento ? `nacida/o el ${session.fechaNacimiento}` : ''
+      ].filter(Boolean).join(', ');
+
+      const contextoTexto = session.contextoPorCliente
+        ? `quiere consultar sobre: "${session.contextoPorCliente}"`
+        : '';
 
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas || [],
@@ -76,15 +80,9 @@ module.exports = async function handler(req, res) {
         contextoDadoPorCliente: session.contextoPorCliente
       });
 
-      const contextoConocido = session.contextoPorCliente
-        ? `El cliente quiere consultar sobre: "${session.contextoPorCliente}".`
-        : session.resumenSofia
-          ? `Contexto de la conversación con Sofía: ${session.resumenSofia}`
-          : '';
-
       const mensajeLuna = await chat(
         prompt, [],
-        `Presentate como Luna en una o dos frases cálidas. ${contextoConocido} Pedíle su ${pedidoDatos} para poder arrancar la lectura. PROHIBIDO decir que "ya tenés lista" la tirada o la consulta — no podés tenerla lista sin los datos del cliente. Sin emojis. Usá ||| para separar mensajes.`
+        `Presentate como Luna en una frase cálida y directa. Corroborá los datos del cliente de forma natural: "${datosTexto}". ${contextoTexto ? `Sabés que ${contextoTexto}.` : ''} Preguntá si quiere agregar algo antes de arrancar. Sin emojis. Usá ||| para separar mensajes.`
       );
 
       session.historialChat.push({ role: 'assistant', content: mensajeLuna });

@@ -233,12 +233,16 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
   // Luna pide datos en su primer mensaje → cuando el cliente responda se hace la lectura directamente
   session.lunaRecopiloData = true;
 
-  const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
-    || (session.servicio || '').toLowerCase().includes('carta astral');
+  // Sofía ya recopiló los datos. Luna los confirma y pregunta si hay algo más antes de arrancar.
+  const nombreMostrar = session.nombreCompleto || session.nombre || '';
+  const datosTexto = [
+    nombreMostrar,
+    session.fechaNacimiento ? `nacida/o el ${session.fechaNacimiento}` : ''
+  ].filter(Boolean).join(', ');
 
-  const pedidoDatos = esCartaAstral
-    ? 'nombre completo, fecha de nacimiento (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
-    : 'nombre completo y fecha de nacimiento (día, mes y año)';
+  const contextoTexto = session.contextoPorCliente
+    ? `quiere consultar sobre: "${session.contextoPorCliente}"`
+    : '';
 
   const prompt = getLunaPrompt({
     cartasIds: session.cartasLanzadas || [],
@@ -248,9 +252,11 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     contextoDadoPorCliente: session.contextoPorCliente
   });
 
+  const base = `Presentate como Luna en una frase cálida y directa. Corroborá los datos del cliente de forma natural: "${datosTexto}". ${contextoTexto ? `Sabés que ${contextoTexto}.` : ''} Preguntá si quiere agregar algo antes de arrancar. Sin emojis. Usá ||| para separar mensajes.`;
+
   const instruccion = mensajeClienteMientrasEsperaba
-    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}". Presentate como Luna en una frase cálida, sin drama por la espera. Luego pedíle su ${pedidoDatos} para arrancar la lectura. PROHIBIDO decir que "ya tenés lista" la tirada o la consulta — no podés tenerla lista sin los datos. Sin emojis. Usá ||| para separar mensajes si hace falta.`
-    : `Presentate como Luna en una o dos frases cálidas. NO menciones que ya tenés lista ninguna lectura — no tiene sentido sin los datos. Pedíle su ${pedidoDatos} de forma conversacional para poder arrancar. Sin emojis. Usá ||| para separar mensajes.`;
+    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. ${base}`
+    : base;
 
   await saveSession(numero, session);
   const mensajeLuna = await chat(prompt, [], instruccion);
@@ -446,12 +452,18 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           await new Promise(r => setTimeout(r, 800));
           await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 1000));
-          if (session.nombre) {
+          if (session.nombre && session.fechaNacimiento) {
             session.etapa = 'pidiendo_contexto';
             respuesta = `¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
+          } else if (session.nombre) {
+            session.etapa = 'pidiendo_fecha';
+            const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral');
+            respuesta = esCartaAstral
+              ? `¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
+              : `¿y tu fecha de nacimiento? (día, mes y año)`;
           } else {
             session.etapa = 'pidiendo_nombre';
-            respuesta = `¿cómo te llamo para avisarle a luna?`;
+            respuesta = `¿me pasás tu nombre completo para avisarle a luna?`;
           }
         } else {
           try {
@@ -498,14 +510,22 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           const clienteNum = mensajeTexto.split(' ')[1];
           const sc = await getSession(clienteNum);
           sc.montosPagados.push(sc.precioServicio);
-          if (sc.nombre) {
+          if (sc.nombre && sc.fechaNacimiento) {
             sc.etapa = 'pidiendo_contexto';
             await saveSession(clienteNum, sc);
             await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`);
+          } else if (sc.nombre) {
+            sc.etapa = 'pidiendo_fecha';
+            await saveSession(clienteNum, sc);
+            const esCartaAstral = (sc.servicio || '').toLowerCase().includes('carta_astral');
+            const msgFecha = esCartaAstral
+              ? `pago confirmado ✨|||¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
+              : `pago confirmado ✨|||¿y tu fecha de nacimiento? (día, mes y año)`;
+            await enviarMensajesMultiples(clienteNum, msgFecha);
           } else {
             sc.etapa = 'pidiendo_nombre';
             await saveSession(clienteNum, sc);
-            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿cómo te llamo para avisarle a luna?`);
+            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿me pasás tu nombre completo para avisarle a luna?`);
           }
           respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
@@ -522,11 +542,23 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       break;
     }
 
-    // ── Pedir nombre ─────────────────────────────────────────────────────────
+    // ── Pedir nombre completo ────────────────────────────────────────────────
     case 'pidiendo_nombre': {
-      session.nombre = mensajeTexto.trim().split(' ')[0];
+      session.nombreCompleto = mensajeTexto.trim();
+      session.nombre = mensajeTexto.trim().split(' ')[0]; // primer nombre para referencias de Sofía
+      session.etapa = 'pidiendo_fecha';
+      const esCartaAstralNombre = (session.servicio || '').toLowerCase().includes('carta_astral');
+      respuesta = esCartaAstralNombre
+        ? `un gusto, ${session.nombre} 🌙|||para la carta astral necesito tu fecha de nacimiento (día, mes y año) — y si tenés la hora y la ciudad donde naciste, mejor`
+        : `un gusto, ${session.nombre} 🌙|||¿y tu fecha de nacimiento? (día, mes y año)`;
+      break;
+    }
+
+    // ── Pedir fecha de nacimiento ────────────────────────────────────────────
+    case 'pidiendo_fecha': {
+      session.fechaNacimiento = mensajeTexto.trim();
       session.etapa = 'pidiendo_contexto';
-      respuesta = `un gusto, ${session.nombre} 🌙|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
+      respuesta = `anotado ✨|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
       break;
     }
 
@@ -575,14 +607,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
 
       if (!session.lunaRecopiloData) {
-        // Fallback: Luna aún no pidió datos (ej: entró por cron sin el flag).
-        // Pedílos ahora y marcar el flag para que el próximo mensaje sea el de la lectura.
+        // Fallback: Luna entró sin datos recopilados (sesión antigua o edge case).
+        // Corroborá lo que haya y pedí lo que falte.
         session.lunaRecopiloData = true;
-        const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
-          || (session.servicio || '').toLowerCase().includes('carta astral');
-        const pedidoDatos = esCartaAstral
-          ? 'nombre completo, fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
-          : 'nombre completo y fecha de nacimiento (día, mes y año)';
+        const nombreMostrar = session.nombreCompleto || session.nombre || '';
+        const tieneDatos = nombreMostrar && session.fechaNacimiento;
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
@@ -590,14 +619,30 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional y breve. Sin emojis.`
-        );
+        if (tieneDatos) {
+          const datosTexto = `${nombreMostrar}, nacida/o el ${session.fechaNacimiento}`;
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta dijo: "${mensajeTexto}". Corroborá sus datos de forma cálida: "${datosTexto}". Preguntá si quiere agregar algo antes de arrancar. Sin emojis.`
+          );
+        } else {
+          const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral');
+          const pedidoDatos = esCartaAstral
+            ? 'nombre completo, fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
+            : 'nombre completo y fecha de nacimiento (día, mes y año)';
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional. Sin emojis.`
+          );
+        }
       } else if (necesitaCartas) {
-        // PASO 2a: tiene datos, servicio con tirada → tirar cartas y leer
-        session.datosBiograficos = mensajeTexto;
+        // Tiene datos + servicio con tirada → tirar cartas y leer
+        // mensajeTexto es lo que agregó el cliente (o "nada más") — se usa como contexto adicional
+        session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
+        const agregado = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
+          ? ` También agregó: "${mensajeTexto}".` : '';
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
         const cantidadCartas = session.servicio?.includes('completa') ? 7 : 3;
 
@@ -628,15 +673,18 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           contextoDadoPorCliente: session.contextoPorCliente
         });
         const nombresCartas = session.cartasLanzadas.map(nombreCarta);
+        const datosClienteTirada = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
         respuesta = await chat(
           promptTirada,
           session.historialChat.slice(0, -1),
-          `La clienta consulta: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Cartas: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas. Sin emojis. Usá ||| para separar mensajes.`
+          `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado} Cartas: ${nombresCartas.join(', ')}. Hacé la lectura completa conectando las cartas entre sí. Sin emojis. Usá ||| para separar mensajes.`
         );
         session.etapa = 'upsell';
       } else if (!session.datosBiograficos) {
-        // PASO 2b: tiene datos, servicio sin tirada → hacer la lectura/servicio directamente
-        session.datosBiograficos = mensajeTexto;
+        // Tiene datos, servicio sin tirada → lectura/servicio directo
+        session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
+        const agregadoDirecto = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
+          ? ` También agregó: "${mensajeTexto}".` : '';
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
@@ -644,10 +692,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
+        const datosClienteDirecto = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta consulta: "${session.historialConsulta}". Sus datos: "${mensajeTexto}". Comenzá con el servicio contratado (${session.servicio}), incorporando los datos para personalizar. Sin emojis. Usá ||| para separar mensajes.`
+          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: "${session.historialConsulta}".${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Sin emojis. Usá ||| para separar mensajes.`
         );
         session.etapa = 'upsell';
       } else {
