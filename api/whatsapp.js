@@ -230,7 +230,15 @@ Si el monto está dentro del rango → valido: true`
 
 async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = null) {
   session.etapa = 'con_luna';
-  await saveSession(numero, session);
+  // Luna pide datos en su primer mensaje → cuando el cliente responda se hace la lectura directamente
+  session.lunaRecopiloData = true;
+
+  const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
+    || (session.servicio || '').toLowerCase().includes('carta astral');
+
+  const pedidoDatos = esCartaAstral
+    ? 'fecha de nacimiento completa (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
+    : 'fecha de nacimiento (día, mes y año)';
 
   const prompt = getLunaPrompt({
     cartasIds: session.cartasLanzadas || [],
@@ -240,16 +248,11 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     contextoDadoPorCliente: session.contextoPorCliente
   });
 
-  const contextoConocido = session.contextoPorCliente
-    ? `Ya sabés que quiere: "${session.contextoPorCliente}".`
-    : session.resumenSofia
-      ? `Ya hablaste con Sofía y sabés el contexto.`
-      : '';
-
   const instruccion = mensajeClienteMientrasEsperaba
-    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. ${contextoConocido} Empezá con algo breve tipo "disculpá la demora" sin drama, presentate como Luna, y arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`
-    : `Presentate como Luna de forma cálida. ${contextoConocido} Arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`;
+    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}". Presentate como Luna, una sola frase cálida y sin drama por la espera. Luego pedíle su ${pedidoDatos} para arrancar. Sin emojis. Usá ||| para separar mensajes si hace falta.`
+    : `Presentate como Luna en una o dos frases cálidas y directas. Mencioná el servicio que contrató (${session.servicio || 'consulta'}). Después pedíle su ${pedidoDatos} para poder personalizar la lectura. Sin emojis. Usá ||| para separar mensajes.`;
 
+  await saveSession(numero, session);
   const mensajeLuna = await chat(prompt, [], instruccion);
   session.historialChat.push({ role: 'assistant', content: mensajeLuna });
   await saveSession(numero, session);
@@ -536,15 +539,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         .join('\n');
       session.etapa = 'esperando_luna';
 
-      // Delay aleatorio entre 30s y 2 minutos
-      const demoraSeg = Math.floor(Math.random() * 91) + 30;
+      // Delay aleatorio entre 15s y 45s — suficiente para que parezca real sin que el cliente espere mucho
+      const demoraSeg = Math.floor(Math.random() * 31) + 15;
       session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
 
       const fraseEspera = [
-        `perfecto, ya le aviso ✨|||luna está terminando con una consulta — en 1 o 2 minutos escribime cualquier cosa y te la paso directamente 🌙`,
-        `dale, le mando mensaje ahora ✨|||está cerrando con alguien, en un ratito escribime y te conecto con ella 🌙`,
-        `perfecto ✨|||luna está en una lectura, en poquito escribime y te la paso 🌙`,
-        `ya le aviso ✨|||está terminando con alguien — en un momento escribime y te conecto con luna 🌙`,
+        `perfecto, ya le aviso ✨|||luna está terminando con alguien, en un ratito escribime y te la paso 🌙`,
+        `dale, le mando mensaje ahora ✨|||está cerrando una consulta, en poquito escribime y te conecto con ella 🌙`,
+        `perfecto ✨|||luna está con alguien, en breve escribime y te la paso 🌙`,
+        `ya le aviso ✨|||está terminando — en un momento escribime y te conecto con luna 🌙`,
       ];
       respuesta = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
       break;
@@ -563,15 +566,23 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Luna atiende ─────────────────────────────────────────────────────────
     case 'con_luna': {
+      // historialConsulta = lo que el cliente quiere consultar.
+      // Usamos el contexto que ya le dio a Sofía; si no hay, el primer mensaje en esta etapa.
       if (!session.historialConsulta) {
-        session.historialConsulta = mensajeTexto;
+        session.historialConsulta = session.contextoPorCliente || mensajeTexto;
       }
 
       const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
 
       if (!session.lunaRecopiloData) {
-        // PASO 1 (todos los servicios): Luna pide datos biográficos
+        // Fallback: Luna aún no pidió datos (ej: entró por cron sin el flag).
+        // Pedílos ahora y marcar el flag para que el próximo mensaje sea el de la lectura.
         session.lunaRecopiloData = true;
+        const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
+          || (session.servicio || '').toLowerCase().includes('carta astral');
+        const pedidoDatos = esCartaAstral
+          ? 'fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
+          : 'fecha de nacimiento (día, mes y año)';
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
@@ -582,7 +593,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dijo: "${mensajeTexto}". Pedíle sus datos de forma natural para personalizar la lectura: fecha de nacimiento (día, mes, año) y signo si lo sabe. Un solo mensaje corto, conversacional. Sin emojis.`
+          `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional y breve. Sin emojis.`
         );
       } else if (necesitaCartas) {
         // PASO 2a: tiene datos, servicio con tirada → tirar cartas y leer

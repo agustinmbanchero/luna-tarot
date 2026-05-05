@@ -58,7 +58,15 @@ module.exports = async function handler(req, res) {
 
       // Iniciar Luna
       session.etapa = 'con_luna';
+      // Luna pedirá datos en su primer mensaje → cuando el cliente responda se hace la lectura
+      session.lunaRecopiloData = true;
       await saveSession(numero, session);
+
+      const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
+        || (session.servicio || '').toLowerCase().includes('carta astral');
+      const pedidoDatos = esCartaAstral
+        ? 'fecha de nacimiento completa (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
+        : 'fecha de nacimiento (día, mes y año)';
 
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas || [],
@@ -69,14 +77,14 @@ module.exports = async function handler(req, res) {
       });
 
       const contextoConocido = session.contextoPorCliente
-        ? `Ya sabés que quiere: "${session.contextoPorCliente}".`
+        ? `El cliente quiere consultar sobre: "${session.contextoPorCliente}".`
         : session.resumenSofia
-          ? `Ya hablaste con Sofía y sabés el contexto.`
+          ? `Contexto de la conversación con Sofía: ${session.resumenSofia}`
           : '';
 
       const mensajeLuna = await chat(
         prompt, [],
-        `Presentate como Luna de forma cálida. ${contextoConocido} Arrancá directo con la consulta usando el contexto que ya tenés — NO preguntes qué lo trajo ni qué quiere saber, ya lo sabés. Sin emojis. Usá ||| para separar mensajes.`
+        `Presentate como Luna en una o dos frases cálidas y directas. Mencioná el servicio contratado (${session.servicio || 'consulta'}). ${contextoConocido} Luego pedíle su ${pedidoDatos} para personalizar la lectura. Sin emojis. Usá ||| para separar mensajes.`
       );
 
       session.historialChat.push({ role: 'assistant', content: mensajeLuna });
