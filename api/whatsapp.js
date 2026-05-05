@@ -646,17 +646,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional. Sin emojis.`
           );
         }
-      } else if (necesitaCartas) {
-        // Tiene datos + servicio con tirada → tirar cartas y leer
-        // mensajeTexto es lo que agregó el cliente (o "nada más") — se usa como contexto adicional
+      } else if (necesitaCartas && !session.cartasEnviadas) {
+        // PASO 1: tirar cartas y mandarlas. La lectura se genera en el próximo mensaje.
         session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
-        const agregado = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
-          ? ` También agregó: "${mensajeTexto}".` : '';
+        session.agregadoContexto = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
+          ? mensajeTexto : '';
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
         const cantidadCartas = session.servicio?.includes('completa') ? 7 : 3;
 
-        // Guardar cartas inmediatamente para evitar duplicados por mensajes simultáneos
         session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
+        session.cartasEnviadas = true;
         await saveSession(numero, session);
 
         await enviarMensaje(numero, `bien, ya tengo todo lo que necesito`);
@@ -674,14 +673,13 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           }
         }
 
-        const promptTirada = getLunaPrompt({
-          cartasIds: session.cartasLanzadas,
-          nombreCliente: session.nombre,
-          servicio: session.servicio,
-          historialSofia: session.resumenSofia,
-          contextoDadoPorCliente: session.contextoPorCliente
-        });
-        const esCompleta = cantidadCartas === 7;
+        // Pedir confirmación para arrancar — el próximo mensaje dispara la lectura
+        respuesta = `mirá bien cada carta. cuando estés lista, escribime y empezamos`;
+
+      } else if (session.cartasEnviadas && session.datosBiograficos !== 'leido') {
+        // PASO 2: cliente respondió después de ver las cartas → generar la lectura
+        const agregado = session.agregadoContexto ? ` También agregó: "${session.agregadoContexto}".` : '';
+        const esCompleta = session.cartasLanzadas.length === 7;
         const posicionesCompleta = [
           'raíz / qué te trajo hasta acá',
           'presente / la energía actual',
@@ -697,6 +695,17 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           .map((id, i) => `${i + 1}. ${posiciones[i]}: ${nombreCarta(id)}`)
           .join('\n');
         const datosClienteTirada = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
+
+        session.datosBiograficos = 'leido';
+        await saveSession(numero, session);
+
+        const promptTirada = getLunaPrompt({
+          cartasIds: session.cartasLanzadas,
+          nombreCliente: session.nombre,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
         respuesta = await chat(
           promptTirada,
           session.historialChat.slice(0, -1),
