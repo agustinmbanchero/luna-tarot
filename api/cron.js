@@ -65,8 +65,8 @@ module.exports = async function handler(req, res) {
       const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
         || (session.servicio || '').toLowerCase().includes('carta astral');
       const pedidoDatos = esCartaAstral
-        ? 'fecha de nacimiento completa (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
-        : 'fecha de nacimiento (día, mes y año)';
+        ? 'nombre completo, fecha de nacimiento (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
+        : 'nombre completo y fecha de nacimiento (día, mes y año)';
 
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas || [],
@@ -84,7 +84,7 @@ module.exports = async function handler(req, res) {
 
       const mensajeLuna = await chat(
         prompt, [],
-        `Presentate como Luna en una o dos frases cálidas y directas. Mencioná el servicio contratado (${session.servicio || 'consulta'}). ${contextoConocido} Luego pedíle su ${pedidoDatos} para personalizar la lectura. Sin emojis. Usá ||| para separar mensajes.`
+        `Presentate como Luna en una o dos frases cálidas. ${contextoConocido} Pedíle su ${pedidoDatos} para poder arrancar la lectura. PROHIBIDO decir que "ya tenés lista" la tirada o la consulta — no podés tenerla lista sin los datos del cliente. Sin emojis. Usá ||| para separar mensajes.`
       );
 
       session.historialChat.push({ role: 'assistant', content: mensajeLuna });

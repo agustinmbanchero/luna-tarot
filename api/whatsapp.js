@@ -237,8 +237,8 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     || (session.servicio || '').toLowerCase().includes('carta astral');
 
   const pedidoDatos = esCartaAstral
-    ? 'fecha de nacimiento completa (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
-    : 'fecha de nacimiento (día, mes y año)';
+    ? 'nombre completo, fecha de nacimiento (día, mes y año), hora de nacimiento si la tenés, y ciudad donde naciste'
+    : 'nombre completo y fecha de nacimiento (día, mes y año)';
 
   const prompt = getLunaPrompt({
     cartasIds: session.cartasLanzadas || [],
@@ -249,8 +249,8 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
   });
 
   const instruccion = mensajeClienteMientrasEsperaba
-    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}". Presentate como Luna, una sola frase cálida y sin drama por la espera. Luego pedíle su ${pedidoDatos} para arrancar. Sin emojis. Usá ||| para separar mensajes si hace falta.`
-    : `Presentate como Luna en una o dos frases cálidas y directas. Mencioná el servicio que contrató (${session.servicio || 'consulta'}). Después pedíle su ${pedidoDatos} para poder personalizar la lectura. Sin emojis. Usá ||| para separar mensajes.`;
+    ? `El cliente escribió "${mensajeClienteMientrasEsperaba}". Presentate como Luna en una frase cálida, sin drama por la espera. Luego pedíle su ${pedidoDatos} para arrancar la lectura. PROHIBIDO decir que "ya tenés lista" la tirada o la consulta — no podés tenerla lista sin los datos. Sin emojis. Usá ||| para separar mensajes si hace falta.`
+    : `Presentate como Luna en una o dos frases cálidas. NO menciones que ya tenés lista ninguna lectura — no tiene sentido sin los datos. Pedíle su ${pedidoDatos} de forma conversacional para poder arrancar. Sin emojis. Usá ||| para separar mensajes.`;
 
   await saveSession(numero, session);
   const mensajeLuna = await chat(prompt, [], instruccion);
@@ -581,8 +581,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral')
           || (session.servicio || '').toLowerCase().includes('carta astral');
         const pedidoDatos = esCartaAstral
-          ? 'fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
-          : 'fecha de nacimiento (día, mes y año)';
+          ? 'nombre completo, fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
+          : 'nombre completo y fecha de nacimiento (día, mes y año)';
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
