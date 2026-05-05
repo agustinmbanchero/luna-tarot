@@ -697,6 +697,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const datosClienteTirada = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
 
         session.datosBiograficos = 'leido';
+        session.etapa = 'upsell';
         await saveSession(numero, session);
 
         const promptTirada = getLunaPrompt({
@@ -706,12 +707,19 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
-        respuesta = await chat(
-          promptTirada,
-          session.historialChat.slice(0, -1),
-          `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`
-        );
-        session.etapa = 'upsell';
+        try {
+          respuesta = await chat(
+            promptTirada,
+            session.historialChat.slice(-8),
+            `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`,
+            2048
+          );
+        } catch (err) {
+          console.error('Error generando lectura:', err.message);
+          respuesta = 'dame un momento, tengo algo en la energía que necesito terminar de leer. escribime de nuevo en un ratito';
+          session.datosBiograficos = session.fechaNacimiento; // permitir reintento
+          await saveSession(numero, session);
+        }
       } else if (!session.datosBiograficos) {
         // Tiene datos, servicio sin tirada → lectura/servicio directo
         session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
