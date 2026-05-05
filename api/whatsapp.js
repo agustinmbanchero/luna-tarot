@@ -150,34 +150,66 @@ Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_cam
   return resultado.length > 0 ? resultado : null;
 }
 
-// ── Detectar cuáles servicios confirmó el cliente ────────────────────────────
+// ── Clasificar intención de confirmación del cliente ─────────────────────────
+// Reemplaza la detección por regex + dos Haiku calls separadas.
+// Devuelve los servicios confirmados (array), o [] si no hay confirmación.
 
-async function detectarServiciosSeleccionados(mensajeTexto, serviciosSugeridos) {
-  const lista = serviciosSugeridos.map((s, i) =>
+async function clasificarIntentConfirmacion(mensajeTexto, serviciosSugeridos) {
+  const todosServicios = { ...precios.servicios, ...precios.packs_combinados, ...precios.packs_preguntas };
+
+  const sugeridosLista = serviciosSugeridos.map((s, i) =>
     `${i + 1}. ${s.key}: ${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`
   ).join('\n');
+
+  const todosLista = Object.entries(todosServicios)
+    .map(([k, v]) => `${k}: ${v.nombre}`)
+    .join(', ');
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 100,
     messages: [{
       role: 'user',
-      content: `La clienta dijo: "${mensajeTexto}"
+      content: `Mensaje de una clienta de un estudio de tarot:
+"${mensajeTexto}"
 
-Los servicios que se le ofrecieron:
-${lista}
+Sofía le había sugerido:
+${sugeridosLista || '(ninguno específico aún)'}
 
-¿Cuáles está eligiendo? Respondé SOLO con los keys separados por coma, o "todos" si quiere todos, o "ninguno" si todavía no confirmó ninguno.`
+Todos los servicios disponibles: ${todosLista}
+
+¿La clienta está CONFIRMANDO que quiere contratar? Usá criterio estricto.
+
+SÍ CUENTA como confirmación:
+• "sí quiero eso" / "me lo llevo" / "ese mismo" / "dale" / "ambos" / "los dos"
+• "tomame el turno" / "agendame" / "me anoto" / "hacelo"
+• Nombrar un servicio con intención clara de contratarlo: "quiero la tirada completa" / "me llevo el pack"
+
+NO CUENTA (respondé "ninguno"):
+• Pedir info: "contame", "comentame", "explicame", "qué incluye", "cuánto dura", "cómo funciona"
+• Hacer preguntas: "¿y si...?", "¿cuál es mejor?", "¿qué diferencia hay?"
+• Describir su situación: "es que tengo un problema con...", "me está pasando que..."
+• Indecisión: "no sé", "estoy pensando", "tengo dudas", "me lo pienso"
+• Pedir recomendación: "¿cuál me recomendás?", "¿qué me conviene?"
+
+Si confirma: respondé SOLO los keys separados por coma (de los sugeridos si aplica, o del listado completo).
+Si no confirma: respondé exactamente: ninguno`
     }]
   });
 
   const resp = response.content[0].text.trim().toLowerCase().replace(/\s/g, '');
 
-  if (resp.includes('todos')) return serviciosSugeridos;
-  if (resp.includes('ninguno')) return [];
+  if (resp === 'ninguno' || resp.startsWith('ninguno')) return [];
 
   const keys = resp.replace(/[^a-z_,]/g, '').split(',').filter(Boolean);
-  return serviciosSugeridos.filter(s => keys.includes(s.key));
+
+  // Priorizar sugeridos; si no matchean, buscar en todos los servicios
+  const matchSugeridos = serviciosSugeridos.filter(s => keys.includes(s.key));
+  if (matchSugeridos.length > 0) return matchSugeridos;
+
+  return keys
+    .map(k => todosServicios[k] ? { key: k, ...todosServicios[k] } : null)
+    .filter(Boolean);
 }
 
 // ── Validación de comprobante con Claude ──────────────────────────────────────
@@ -324,8 +356,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      // Si está pidiendo el menú/listado, Sofía lo muestra directo
-      const pidieronMenu = /list[ao]|menú|menu|todo[s]? lo que|qué tienen|que tienen|ver todo|todas las opciones|opciones|todo lo|dame todo|mostrame todo/i.test(mensajeTexto);
+      // Solo si piden explícitamente el menú completo/listado de precios
+      const pidieronMenu = /list[ao]|menú|menu|ver todo|mostrame todo|dame todo|toda[s]? las opciones|todos los servicios|cuáles son|que tienen|qué tienen/i.test(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
@@ -377,33 +409,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     case 'confirmando_eleccion': {
       const sugeridos = session.serviciosSugeridos || [];
 
-      // Si pide el menú completo, Sofía lo muestra y volvemos a esperar elección
-      const pidieronMenu = /list[ao]|menú|menu|todo[s]? lo que|qué tienen|que tienen|ver todo|todas las opciones|opciones|todo lo|dame todo|mostrame todo/i.test(mensajeTexto);
-      if (pidieronMenu) {
-        session.etapa = 'esperando_eleccion';
-        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
-        break;
-      }
-
-      // Primero: ¿nombró un servicio concreto por nombre? → ignorar sugeridos, usar ese
-      const servicioExplicito = await detectarServicioConIA(mensajeTexto);
-      if (servicioExplicito) {
-        session.servicio = servicioExplicito.key;
-        session.precioServicio = servicioExplicito.precio;
-        session.etapa = 'esperando_comprobante';
-        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const confirmacion = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioExplicito.nombre}". Confirmalo en 1 oración corta y entusiasta. PROHIBIDO: pedir nombre, pedir contexto, preguntar por Luna, mencionar precio o alias.`
-        );
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioExplicito.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
-        respuesta = `${confirmacion}|||${datosPago}`;
-        break;
-      }
-
-      const seleccionados = await detectarServiciosSeleccionados(mensajeTexto, sugeridos);
+      // Clasificación unificada: ¿confirmó algo o no?
+      const seleccionados = await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
         const total = seleccionados.reduce((acc, s) => acc + (s.precio || 0), 0);
@@ -414,7 +421,6 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         session.precioServicio = total;
         session.etapa = 'esperando_comprobante';
 
-        // Confirmación por código para evitar que Sofía diga el servicio equivocado
         const confirmacion = `perfecto, ${nombresServicios.toLowerCase()} ✨`;
 
         const resumenServicios = seleccionados.length > 1
@@ -425,12 +431,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         respuesta = `${confirmacion}|||${datosPago}`;
       } else {
-        // No confirmó nada todavía, seguir conversando
+        // No confirmó — Sofía responde naturalmente con el contexto de lo sugerido
+        // Se mantiene en confirmando_eleccion para no perder el contexto
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        const contextoSugeridos = sugeridos.length > 0
+          ? `Le habías sugerido: ${sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ')}.`
+          : '';
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dice: "${mensajeTexto}". Estás esperando que confirme qué servicio(s) quiere de los que le ofreciste: ${sugeridos.map(s => s.nombre).join(', ')}. Respondé naturalmente según lo que dijo.`
+          `La clienta dice: "${mensajeTexto}". ${contextoSugeridos} Respondé naturalmente según lo que preguntó o comentó. Solo avanzás al pago cuando confirme explícitamente.`
         );
       }
       break;
