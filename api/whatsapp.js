@@ -696,10 +696,6 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           .join('\n');
         const datosClienteTirada = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
 
-        session.datosBiograficos = 'leido';
-        session.etapa = 'upsell';
-        await saveSession(numero, session);
-
         const promptTirada = getLunaPrompt({
           cartasIds: session.cartasLanzadas,
           nombreCliente: session.nombre,
@@ -710,15 +706,18 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         try {
           respuesta = await chat(
             promptTirada,
-            session.historialChat.slice(-8),
+            session.historialChat.slice(-4),
             `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`,
-            2048
+            4096
           );
+          // Solo marcamos como leído si la lectura se generó exitosamente
+          session.datosBiograficos = 'leido';
+          session.etapa = 'upsell';
+          await saveSession(numero, session);
         } catch (err) {
           console.error('Error generando lectura:', err.message);
           respuesta = 'dame un momento, tengo algo en la energía que necesito terminar de leer. escribime de nuevo en un ratito';
-          session.datosBiograficos = session.fechaNacimiento; // permitir reintento
-          await saveSession(numero, session);
+          // No guardamos cambios en sesión → el próximo mensaje reintenta la lectura
         }
       } else if (!session.datosBiograficos) {
         // Tiene datos, servicio sin tirada → lectura/servicio directo
