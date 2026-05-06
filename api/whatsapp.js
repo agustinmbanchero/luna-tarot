@@ -356,7 +356,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
       // Solo si piden explícitamente el menú completo/listado de precios
-      const pidieronMenu = /list[ao]|menú|menu|ver todo|mostrame todo|dame todo|toda[s]? las opciones|todos los servicios|cuáles son|que tienen|qué tienen/i.test(mensajeTexto);
+      const pidieronMenu = /list[ao]|menú|menu|ver todo|mostrame todo|dame todo|toda[s]? las opciones|todos los servicios|cuáles son|que tienen|qué tienen|servicio|que ofrecen|qué ofrecen|que hacen|qué hacen|que hay|qué hay/i.test(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
