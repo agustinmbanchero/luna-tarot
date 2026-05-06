@@ -363,21 +363,18 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         break;
       }
 
-      // Primero: ¿eligió un servicio concreto? → pago directo por código
+      // Primero: ¿nombró un servicio concreto? → confirmar antes de mandar el CBU
       const servicioElegido = await detectarServicioConIA(mensajeTexto);
       if (servicioElegido) {
-        session.servicio = servicioElegido.key;
-        session.precioServicio = servicioElegido.precio;
-        session.etapa = 'esperando_comprobante';
+        session.serviciosSugeridos = [servicioElegido];
+        session.etapa = 'confirmando_eleccion';
 
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const confirmacion = await chat(
+        respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioElegido.nombre}". Confirmalo en 1 oración corta y entusiasta. PROHIBIDO: pedir nombre, pedir contexto, preguntar por Luna, mencionar precio o alias.`
+          `La clienta mencionó "${servicioElegido.nombre}" ($${servicioElegido.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
         );
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioElegido.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
-        respuesta = `${confirmacion}|||${datosPago}`;
         break;
       }
 
@@ -405,10 +402,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     }
 
     // ── Confirmando elección de servicios ────────────────────────────────────
+    // Sofía ya preguntó "¿lo reservamos?" — acá solo espera el sí o no del cliente.
+    // El CBU se manda SOLO cuando clasificarIntentConfirmacion detecta confirmación explícita.
     case 'confirmando_eleccion': {
       const sugeridos = session.serviciosSugeridos || [];
 
-      // Clasificación unificada: ¿confirmó algo o no?
       const seleccionados = await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
