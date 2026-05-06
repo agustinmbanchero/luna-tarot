@@ -149,6 +149,22 @@ Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_cam
   return resultado.length > 0 ? resultado : null;
 }
 
+// ── Detectar si piden ver el menú/listado de servicios ───────────────────────
+
+async function detectarPeticionMenu(mensajeTexto) {
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 10,
+    messages: [{
+      role: 'user',
+      content: `Mensaje: "${mensajeTexto}"
+¿Esta persona está pidiendo ver qué servicios/opciones hay disponibles, o pedir una lista/menú? (incluye typos y variantes como "serviciso", "que tienen", "qué ofrecen", "mostrame todo", etc.)
+Respondé solo: si / no`
+    }]
+  });
+  return response.content[0].text.trim().toLowerCase().startsWith('si');
+}
+
 // ── Clasificar intención de confirmación del cliente ─────────────────────────
 // Reemplaza la detección por regex + dos Haiku calls separadas.
 // Devuelve los servicios confirmados (array), o [] si no hay confirmación.
@@ -355,8 +371,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      // Solo si piden explícitamente el menú completo/listado de precios
-      const pidieronMenu = /list[ao]|menú|menu|ver todo|mostrame todo|dame todo|toda[s]? las opciones|todos los servicios|cuáles son|que tienen|qué tienen|servicio|que ofrecen|qué ofrecen|que hacen|qué hacen|que hay|qué hay/i.test(mensajeTexto);
+      // ¿Están pidiendo ver el menú/listado? (con IA para tolerar typos)
+      const pidieronMenu = await detectarPeticionMenu(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
