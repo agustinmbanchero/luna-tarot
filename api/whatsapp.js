@@ -419,11 +419,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Confirmando elección de servicios ────────────────────────────────────
     // Sofía ya preguntó "¿lo reservamos?" — acá solo espera el sí o no del cliente.
-    // El CBU se manda SOLO cuando clasificarIntentConfirmacion detecta confirmación explícita.
+    // El CBU se manda SOLO cuando hay confirmación explícita.
     case 'confirmando_eleccion': {
       const sugeridos = session.serviciosSugeridos || [];
 
-      const seleccionados = await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
+      // Pre-check: palabras que SIEMPRE son confirmación, sin pasar por IA
+      const esConfirmacionDirecta = /^(s[ií]|dale|ok|bueno|claro|va|vamos|perfecto|hagalo|hacelo|confirmo|anota|anotame|quiero|lo quiero|reservalo|reservame|si quiero|sí quiero)$/i.test(mensajeTexto.trim().toLowerCase().replace(/[^a-záéíóúñü\s]/g, ''));
+
+      const seleccionados = esConfirmacionDirecta && sugeridos.length > 0
+        ? sugeridos
+        : await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
         const total = seleccionados.reduce((acc, s) => acc + (s.precio || 0), 0);
@@ -444,16 +449,14 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         respuesta = `${confirmacion}|||${datosPago}`;
       } else {
-        // No confirmó — Sofía responde naturalmente con el contexto de lo sugerido
-        // Se mantiene en confirmando_eleccion para no perder el contexto
+        // No confirmó — Sofía responde SOLO sobre los servicios sugeridos.
+        // PROHIBIDO: saltar al pago, pedir nombre, pedir fecha, mencionar a Luna.
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const contextoSugeridos = sugeridos.length > 0
-          ? `Le habías sugerido: ${sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ')}.`
-          : '';
+        const nombresYPrecios = sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ');
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dice: "${mensajeTexto}". ${contextoSugeridos} Respondé naturalmente según lo que preguntó o comentó. Solo avanzás al pago cuando confirme explícitamente.`
+          `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}. Respondé solo sobre eso — si pregunta algo sobre el servicio, respondé; si duda, ayudala a decidir. Terminá siempre preguntando si lo reserva. PROHIBIDO ABSOLUTAMENTE: mencionar alias, monto, pedir nombre, pedir fecha, mencionar a Luna, avanzar al pago.`
         );
       }
       break;
