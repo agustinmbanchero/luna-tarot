@@ -149,6 +149,22 @@ Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_cam
   return resultado.length > 0 ? resultado : null;
 }
 
+// ── Detectar si piden ver el menú/listado de servicios ───────────────────────
+
+async function detectarPeticionMenu(mensajeTexto) {
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 10,
+    messages: [{
+      role: 'user',
+      content: `Mensaje: "${mensajeTexto}"
+¿Esta persona está pidiendo ver qué servicios/opciones hay disponibles, o pedir una lista/menú? (incluye typos y variantes como "serviciso", "que tienen", "qué ofrecen", "mostrame todo", etc.)
+Respondé solo: si / no`
+    }]
+  });
+  return response.content[0].text.trim().toLowerCase().startsWith('si');
+}
+
 // ── Clasificar intención de confirmación del cliente ─────────────────────────
 // Reemplaza la detección por regex + dos Haiku calls separadas.
 // Devuelve los servicios confirmados (array), o [] si no hay confirmación.
@@ -355,29 +371,26 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Esperando elección de servicio ───────────────────────────────────────
     case 'esperando_eleccion': {
-      // Solo si piden explícitamente el menú completo/listado de precios
-      const pidieronMenu = /list[ao]|menú|menu|ver todo|mostrame todo|dame todo|toda[s]? las opciones|todos los servicios|cuáles son|que tienen|qué tienen/i.test(mensajeTexto);
+      // ¿Están pidiendo ver el menú/listado? (con IA para tolerar typos)
+      const pidieronMenu = await detectarPeticionMenu(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
         break;
       }
 
-      // Primero: ¿eligió un servicio concreto? → pago directo por código
+      // Primero: ¿nombró un servicio concreto? → confirmar antes de mandar el CBU
       const servicioElegido = await detectarServicioConIA(mensajeTexto);
       if (servicioElegido) {
-        session.servicio = servicioElegido.key;
-        session.precioServicio = servicioElegido.precio;
-        session.etapa = 'esperando_comprobante';
+        session.serviciosSugeridos = [servicioElegido];
+        session.etapa = 'confirmando_eleccion';
 
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const confirmacion = await chat(
+        respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta eligió: "${servicioElegido.nombre}". Confirmalo en 1 oración corta y entusiasta. PROHIBIDO: pedir nombre, pedir contexto, preguntar por Luna, mencionar precio o alias.`
+          `La clienta mencionó "${servicioElegido.nombre}" ($${servicioElegido.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
         );
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioElegido.precio?.toLocaleString('es-AR')}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
-        respuesta = `${confirmacion}|||${datosPago}`;
         break;
       }
 
@@ -405,11 +418,17 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     }
 
     // ── Confirmando elección de servicios ────────────────────────────────────
+    // Sofía ya preguntó "¿lo reservamos?" — acá solo espera el sí o no del cliente.
+    // El CBU se manda SOLO cuando hay confirmación explícita.
     case 'confirmando_eleccion': {
       const sugeridos = session.serviciosSugeridos || [];
 
-      // Clasificación unificada: ¿confirmó algo o no?
-      const seleccionados = await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
+      // Pre-check: palabras que SIEMPRE son confirmación, sin pasar por IA
+      const esConfirmacionDirecta = /^(s[ií]|dale|ok|bueno|claro|va|vamos|perfecto|hagalo|hacelo|confirmo|anota|anotame|quiero|lo quiero|reservalo|reservame|si quiero|sí quiero)$/i.test(mensajeTexto.trim().toLowerCase().replace(/[^a-záéíóúñü\s]/g, ''));
+
+      const seleccionados = esConfirmacionDirecta && sugeridos.length > 0
+        ? sugeridos
+        : await clasificarIntentConfirmacion(mensajeTexto, sugeridos);
 
       if (seleccionados && seleccionados.length > 0) {
         const total = seleccionados.reduce((acc, s) => acc + (s.precio || 0), 0);
@@ -430,16 +449,14 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         respuesta = `${confirmacion}|||${datosPago}`;
       } else {
-        // No confirmó — Sofía responde naturalmente con el contexto de lo sugerido
-        // Se mantiene en confirmando_eleccion para no perder el contexto
+        // No confirmó — Sofía responde SOLO sobre los servicios sugeridos.
+        // PROHIBIDO: saltar al pago, pedir nombre, pedir fecha, mencionar a Luna.
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const contextoSugeridos = sugeridos.length > 0
-          ? `Le habías sugerido: ${sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ')}.`
-          : '';
+        const nombresYPrecios = sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ');
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dice: "${mensajeTexto}". ${contextoSugeridos} Respondé naturalmente según lo que preguntó o comentó. Solo avanzás al pago cuando confirme explícitamente.`
+          `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}. Respondé solo sobre eso — si pregunta algo sobre el servicio, respondé; si duda, ayudala a decidir. Terminá siempre preguntando si lo reserva. PROHIBIDO ABSOLUTAMENTE: mencionar alias, monto, pedir nombre, pedir fecha, mencionar a Luna, avanzar al pago.`
         );
       }
       break;
