@@ -81,9 +81,18 @@ function urlCarta(cartaId) {
 // ── Detección de servicio con Claude ─────────────────────────────────────────
 
 async function detectarServicioConIA(mensajeTexto) {
-  const serviciosDisponibles = Object.keys(precios.servicios)
-    .concat(Object.keys(precios.packs_combinados))
-    .concat(Object.keys(precios.packs_preguntas));
+  const todosServiciosDetalle = {
+    ...precios.servicios,
+    ...precios.packs_combinados,
+    ...precios.packs_preguntas
+  };
+
+  const serviciosListaDetallada = Object.entries(todosServiciosDetalle)
+    .map(([key, val]) => {
+      const desc = val.descripcion || val.incluye || (val.preguntas ? `${val.preguntas} preguntas` : '');
+      return `${key} (${val.nombre}${desc ? ' — ' + desc : ''})`;
+    })
+    .join('\n');
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
@@ -92,12 +101,12 @@ async function detectarServicioConIA(mensajeTexto) {
       role: 'user',
       content: `El usuario escribió: "${mensajeTexto}"
 
-¿Está nombrando o eligiendo EXPLÍCITAMENTE un servicio de tarot por su nombre? Solo contá como selección si el usuario dice el nombre del servicio claramente (ej: "quiero la tirada completa", "me llevo el pack claridad", "dame la tirada simple", "quiero el desbloqueo de caminos").
+¿Está nombrando o eligiendo EXPLÍCITAMENTE un servicio? Ejemplos válidos: "quiero la tirada completa", "me llevo el pack claridad", "dame 5 preguntas", "quiero el pack de 10 preguntas", "quiero el desbloqueo", "dame 15 preguntas".
 
-NO contés como selección si solo describe su situación o problema (ej: "quiero ver mi trabajo", "estoy trabado", "tengo problemas de amor").
-- Si solo pregunta el precio ("cuánto sale", "qué precio tiene", "cuánto cuesta") sin expresar intención de contratarlo → respondé "ninguno"
+NO contés como selección si solo describe su situación (ej: "estoy trabado", "tengo problemas de amor") o solo pide información/precio sin intención de contratarlo.
 
-Servicios disponibles: ${serviciosDisponibles.join(', ')}
+Servicios disponibles (usá exactamente el key):
+${serviciosListaDetallada}
 
 Respondé SOLO con el key exacto (ej: "tirada_simple") o "ninguno".`
     }]
