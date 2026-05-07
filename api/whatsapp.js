@@ -560,22 +560,24 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             return '';
           }
           sc.montosPagados.push(sc.precioServicio);
+          const confirmaciones = ['listo, pago recibido', 'perfecto, ya está confirmado', 'todo bien con el pago'];
+          const conf = confirmaciones[Math.floor(Math.random() * confirmaciones.length)];
           if (sc.nombre && sc.fechaNacimiento) {
             sc.etapa = 'pidiendo_contexto';
             await saveSession(clienteNum, sc);
-            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`);
+            await enviarMensajesMultiples(clienteNum, `${conf}|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`);
           } else if (sc.nombre) {
             sc.etapa = 'pidiendo_fecha';
             await saveSession(clienteNum, sc);
             const esCartaAstral = (sc.servicio || '').toLowerCase().includes('carta_astral');
             const msgFecha = esCartaAstral
-              ? `pago confirmado ✨|||¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
-              : `pago confirmado ✨|||¿y tu fecha de nacimiento? (día, mes y año)`;
+              ? `${conf} ✨|||¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
+              : `${conf}|||¿y tu fecha de nacimiento? (día, mes y año)`;
             await enviarMensajesMultiples(clienteNum, msgFecha);
           } else {
             sc.etapa = 'pidiendo_nombre';
             await saveSession(clienteNum, sc);
-            await enviarMensajesMultiples(clienteNum, `pago confirmado ✨|||¿me pasás tu nombre completo para avisarle a luna?`);
+            await enviarMensajesMultiples(clienteNum, `${conf} ✨|||¿me pasás tu nombre completo para avisarle a luna?`);
           }
           respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
