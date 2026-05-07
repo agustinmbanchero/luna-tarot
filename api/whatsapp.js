@@ -60,7 +60,7 @@ async function enviarMensajesMultiples(numero, respuesta) {
 
 async function enviarImagen(numero, urlImagen, caption = '') {
   const to = formatNumero(numero);
-  await fetch(`${WHAPI_URL}/messages/image`, {
+  const res = await fetch(`${WHAPI_URL}/messages/image`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${process.env.WHAPI_TOKEN}`,
@@ -68,6 +68,10 @@ async function enviarImagen(numero, urlImagen, caption = '') {
     },
     body: JSON.stringify({ to, media: urlImagen, caption })
   });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Whapi imagen error: ${res.status} ${err}`);
+  }
 }
 
 function urlCarta(cartaId) {
@@ -305,7 +309,6 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. ${base}`
     : base;
 
-  await saveSession(numero, session);
   const mensajeLuna = await chat(prompt, [], instruccion);
   session.historialChat.push({ role: 'assistant', content: mensajeLuna });
   await saveSession(numero, session);
@@ -330,6 +333,18 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     session.nombre = nombreGuardado;
     session.esClienteNuevo = false;
   } else if (saludos.some(s => textoLimpio === s || textoLimpio.startsWith(s + ' ')) && etapasReiniciables.includes(session.etapa)) {
+    const nombreGuardado = session.nombre || null;
+    await deleteSession(numero);
+    session = await getSession(numero);
+    session.nombre = nombreGuardado;
+    session.esClienteNuevo = false;
+  }
+
+  // Si pasaron más de 12 horas y llega un saludo → reiniciar etapas avanzadas
+  const esUnSaludo = /^(hola|buenas|buen[ao]s|hey|holis|buenas noches|buenas tardes|buenas dias|buendia)$/i.test(mensajeTexto.trim());
+  const inactivoMasDe12h = session.ultimaActividad && (Date.now() - session.ultimaActividad) > 12 * 60 * 60 * 1000;
+  const etapasAvanzadas = ['con_luna', 'upsell', 'esperando_luna', 'pidiendo_contexto'];
+  if (esUnSaludo && inactivoMasDe12h && etapasAvanzadas.includes(session.etapa)) {
     const nombreGuardado = session.nombre || null;
     await deleteSession(numero);
     session = await getSession(numero);
@@ -445,7 +460,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           ? seleccionados.map(s => `• ${s.nombre}: $${s.precio?.toLocaleString('es-AR')}`).join('\n') + `\n*Total: $${total.toLocaleString('es-AR')}*`
           : `*Monto exacto:* $${total.toLocaleString('es-AR')}`;
 
-        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Alias:* ${CUENTA.alias}|||${resumenServicios}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
+        const datosPago = `para reservar tu lugar, el pago es por transferencia 🌙|||*Titular:* ${CUENTA.titular}|||*Alias:* ${CUENTA.alias}|||${resumenServicios}|||cuando hagas la transferencia mandame una captura de pantalla del comprobante ✨`;
 
         respuesta = `${confirmacion}|||${datosPago}`;
       } else {
@@ -501,7 +516,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
           session.etapa = 'verificando_pago';
           await new Promise(r => setTimeout(r, 800));
-          respuesta = `hmm, no pude verificar el monto 🙏|||asegurate de mandar una captura de pantalla del comprobante con el monto de $${session.precioServicio?.toLocaleString('es-AR')}`;
+          respuesta = `no pude leer bien el comprobante — ¿podés mandar una foto más clara con el monto visible? a veces la imagen viene con baja resolución 🙏`;
         }
       } else {
         const servicioNuevo = await detectarServicioConIA(mensajeTexto);
@@ -514,7 +529,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             session.historialChat.slice(0, -1),
             `La clienta quiere cambiar a: "${servicioNuevo.nombre || servicioNuevo.key}". Confirmalo brevemente. No preguntes el nombre. No menciones precio ni alias — el sistema los manda después.`
           );
-          const datosPago = `*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioNuevo.precio?.toLocaleString('es-AR')}|||mandame la captura cuando hagas la transferencia ✨`;
+          const datosPago = `*Titular:* ${CUENTA.titular}|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioNuevo.precio?.toLocaleString('es-AR')}|||mandame la captura cuando hagas la transferencia ✨`;
           respuesta = `${confirmacion}|||${datosPago}`;
         } else {
           const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
@@ -534,7 +549,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       if (esAdmin) {
         if (mensajeTexto.toUpperCase().startsWith('APROBAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
+          if (!clienteNum) {
+            await enviarMensaje(numero, 'formato: APROBAR <numero> o RECHAZAR <numero>');
+            return '';
+          }
           const sc = await getSession(clienteNum);
+          if (!sc || sc.etapa !== 'verificando_pago') {
+            await enviarMensaje(numero, `no hay pago pendiente para ${clienteNum}`);
+            return '';
+          }
           sc.montosPagados.push(sc.precioServicio);
           if (sc.nombre && sc.fechaNacimiento) {
             sc.etapa = 'pidiendo_contexto';
@@ -556,7 +579,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
+          if (!clienteNum) {
+            await enviarMensaje(numero, 'formato: APROBAR <numero> o RECHAZAR <numero>');
+            return '';
+          }
           const sc = await getSession(clienteNum);
+          if (!sc || sc.etapa !== 'verificando_pago') {
+            await enviarMensaje(numero, `no hay pago pendiente para ${clienteNum}`);
+            return '';
+          }
           sc.etapa = 'esperando_comprobante';
           await saveSession(clienteNum, sc);
           await enviarMensaje(clienteNum, `mirá, no pudimos verificar el pago 🙏 ¿podés mandar una captura con el monto exacto $${sc.precioServicio?.toLocaleString('es-AR')}?`);
@@ -845,6 +876,10 @@ module.exports = async function handler(req, res) {
       mensajeTexto = msg.document?.caption || '';
     } else {
       // Tipo no manejado (sticker, audio, video, etc.)
+      // Responder siempre para que la clienta no quede en silencio
+      try {
+        await enviarMensaje(numero, 'por acá solo puedo leer texto e imágenes — si querés contarme algo escribime un mensaje 🌙');
+      } catch (e) { console.error('Error respondiendo tipo no manejado:', e); }
       return res.status(200).json({ status: 'ok' });
     }
 
