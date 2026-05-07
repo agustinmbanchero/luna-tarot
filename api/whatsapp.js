@@ -389,7 +389,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       // ¿Están pidiendo ver el menú/listado? (con IA para tolerar typos)
       const pidieronMenu = await detectarPeticionMenu(mensajeTexto);
       if (pidieronMenu) {
-        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
         break;
       }
@@ -482,7 +482,8 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       if (tieneImagen && mediaUrl) {
         session.esClienteNuevo = false;
 
-        await enviarMensaje(numero, `recibí el comprobante ✨`);
+        const acks = ['recibí el comprobante', 'ya lo tengo', 'lo recibí'];
+        await enviarMensaje(numero, acks[Math.floor(Math.random() * acks.length)]);
         await new Promise(r => setTimeout(r, 1000));
         await enviarMensaje(numero, `dame un segundo que lo verifico...`);
 

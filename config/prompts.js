@@ -34,7 +34,7 @@ function formatearMenuCompleto() {
 }
 
 // ── Prompt de Sofía ───────────────────────────────────────────────────────────
-function getSofiaPrompt(clienteVuelve, nombreCliente, esNuevoMensaje) {
+function getSofiaPrompt(clienteVuelve, nombreCliente, esNuevoMensaje, incluirMenu = false) {
   const noche = esNoche();
 
   return `Sos Sofía, la asistente del Estudio de Tarot Luna. Atendés por WhatsApp.
@@ -103,8 +103,9 @@ CÓMO RECOMENDÁS SERVICIOS (ejemplos):
 - Clienta quiere saber de todo → "mirá, el pack completo incluye carta astral, tirada y protección — es el más pedido"
 - Clienta duda → "si no sabés bien por dónde empezar, la tirada simple de 3 cartas da un panorama general rápido"
 
-MENÚ COMPLETO (solo cuando te lo pidan explícitamente):
-${formatearMenuCompleto()}`;
+${incluirMenu
+  ? `MENÚ COMPLETO:\n${formatearMenuCompleto()}`
+  : `MENÚ COMPLETO: no lo tenés disponible en este momento — si la clienta lo pide, decíle que en un segundo se lo mandás y que espere.`}`;
 }
 
 // ── Prompt de Luna ────────────────────────────────────────────────────────────
