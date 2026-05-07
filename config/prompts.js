@@ -109,7 +109,7 @@ ${incluirMenu
 }
 
 // ── Prompt de Luna ────────────────────────────────────────────────────────────
-function getLunaPrompt({ cartasIds, nombreCliente, servicio, historialSofia, contextoDadoPorCliente }) {
+function getLunaPrompt({ cartasIds, nombreCliente, nombreCompleto, servicio, historialSofia, contextoDadoPorCliente }) {
   const conocimientoCartas = cartasIds && cartasIds.length > 0
     ? getConocimientoTirada(cartasIds)
     : '';
@@ -172,7 +172,7 @@ Tenés tres movimientos y elegís según el caso — nunca te disculpás ni tir�
 Lo que JAMÁS hacés: disculparte, ceder completamente, ignorar lo que dijiste, o empezar de cero como si las cartas no hubieran hablado.
 
 CONTEXTO DE ESTA CONSULTA:
-Cliente: ${nombreCliente || "aún sin nombre"}
+Cliente: ${nombreCompleto || nombreCliente || "aún sin nombre"}
 Servicio contratado: ${servicio || "consulta general"}
 ${contextoDadoPorCliente ? `Lo que la clienta contó que quiere consultar: "${contextoDadoPorCliente}"` : ""}
 ${historialSofia ? `Contexto de lo que habló con Sofía: ${historialSofia}` : ""}

@@ -315,6 +315,7 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
   const prompt = getLunaPrompt({
     cartasIds: session.cartasLanzadas || [],
     nombreCliente: session.nombre,
+    nombreCompleto: session.nombreCompleto,
     servicio: session.servicio,
     historialSofia: session.resumenSofia,
     contextoDadoPorCliente: session.contextoPorCliente
@@ -684,8 +685,14 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     // ── Pedir contexto para Luna ─────────────────────────────────────────────
     case 'pidiendo_contexto': {
       session.contextoPorCliente = mensajeTexto;
+      // Filtrar mensajes de pago (alias, monto, comprobante) — son ruido para Luna
+      const esRuidoPago = (m) => {
+        const t = typeof m.content === 'string' ? m.content : '';
+        return /\*Alias:\*|\*Titular:\*|\*Monto|\*Total:|mandame la captura|comprobante de la transferencia|para reservar tu lugar/i.test(t);
+      };
       session.resumenSofia = session.historialChat
         .slice(0, -1)
+        .filter(m => !esRuidoPago(m))
         .map(m => `${m.role === 'user' ? 'Clienta' : 'Sofía'}: ${m.content}`)
         .join('\n');
       session.etapa = 'esperando_luna';
@@ -719,8 +726,10 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     case 'con_luna': {
       // historialConsulta = lo que el cliente quiere consultar.
       // Usamos el contexto que ya le dio a Sofía; si no hay, el primer mensaje en esta etapa.
+      // Si el contexto es trivial (sí, dale, no sé), lo dejamos vacío para que Luna pregunte.
       if (!session.historialConsulta) {
-        session.historialConsulta = session.contextoPorCliente || mensajeTexto;
+        const contextoTrivial = /^(no[s]?[eé]|dale|ok|sí|si|bueno|nada|igual|todo|algo|listo|claro|bien)$/i.test((session.contextoPorCliente || '').trim());
+        session.historialConsulta = (!contextoTrivial && session.contextoPorCliente) ? session.contextoPorCliente : mensajeTexto;
       }
 
       const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
@@ -734,6 +743,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
@@ -809,15 +819,19 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const promptTirada = getLunaPrompt({
           cartasIds: session.cartasLanzadas,
           nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
         try {
+          const consultaEfectiva = session.historialConsulta && session.historialConsulta.trim().length > 2
+            ? `"${session.historialConsulta}"`
+            : 'una consulta general (no especificó tema — leé la energía general y pedíle que te cuente qué la trajo)';
           respuesta = await chat(
             promptTirada,
-            session.historialChat.slice(-4),
-            `Consulta de ${datosClienteTirada}. Quiere saber sobre: "${session.historialConsulta}".${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`,
+            session.historialChat.slice(-8),
+            `Consulta de ${datosClienteTirada}. Quiere saber sobre: ${consultaEfectiva}.${agregado}\n\nCartas en posición:\n${cartasConPosicion}\n\nHacé la lectura completa siguiendo la estructura del prompt (apertura → carta por carta con su posición → síntesis → mensaje final). Sin emojis. Usá ||| para separar mensajes.`,
             4096
           );
           // Solo marcamos como leído si la lectura se generó exitosamente
@@ -837,15 +851,19 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const prompt = getLunaPrompt({
           cartasIds: [],
           nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
         });
         const datosClienteDirecto = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
+        const consultaEfectivaDirecto = session.historialConsulta && session.historialConsulta.trim().length > 2
+          ? `"${session.historialConsulta}"`
+          : 'una consulta general (no especificó tema — leé la energía general y pedíle que te cuente qué la trajo)';
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: "${session.historialConsulta}".${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
+          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
         );
         session.etapa = 'upsell';
       } else {
@@ -853,6 +871,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const prompt = getLunaPrompt({
           cartasIds: session.cartasLanzadas,
           nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
           historialSofia: session.resumenSofia,
           contextoDadoPorCliente: session.contextoPorCliente
@@ -867,6 +886,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas,
         nombreCliente: session.nombre,
+        nombreCompleto: session.nombreCompleto,
         servicio: session.servicio,
         historialSofia: session.resumenSofia,
         contextoDadoPorCliente: session.contextoPorCliente
