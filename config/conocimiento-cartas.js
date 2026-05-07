@@ -133,7 +133,7 @@ const CARTAS = {
     amor: "Relación equilibrada o necesidad urgente de equilibrarla. Inv: desequilibrio de poder.",
     trabajo: "Procesos justos, resolución favorable. Inv: discriminación, problemas legales.",
     dinero: "Acuerdos justos, contratos que se respetan. Inv: fraude, deuda mal manejada, consecuencias de malas decisiones.",
-    mensaje: "La Justicia no es venganza — es equilibrio. El universo siempre, siempre, encuentra la manera de restaurarlo."
+    mensaje: "La Justicia no espera — ya está pesando. La pregunta no es si va a haber consecuencias. Es si estás lista para ver cuáles son las tuyas."
   },
 
   el_colgado: {
@@ -330,7 +330,7 @@ const CARTAS = {
     arcano: "Menor — Bastos",
     derecha: "Todo se mueve rápido. Noticias importantes, viajes, comunicaciones veloces. La energía se acelera y el universo entrega de golpe lo que venía preparando.",
     invertida: "Retrasos inesperados. Mensajes que no llegan o se malinterpretan. Velocidad que se convierte en caos.",
-    amor: "Novedades en el plano amoroso. Mensaje esperado que llega. Relación que se acelera. Inv: comunicación que falla en el momento clave.",
+    amor: "Noticias que mueven lo que estaba quieto. Si esperabas señal, puede ser esta. Si no esperabas nada, preparate para lo que llega rápido. Relación que se acelera de golpe. Inv: comunicación que falla en el momento clave.",
     trabajo: "Proyectos que avanzan rápido, viajes de trabajo, información que llega y hay que procesar. Inv: retrasos en proyectos urgentes.",
     dinero: "Dinero en movimiento — llega y sale rápido. Inv: transacciones que se complican.",
     mensaje: "La energía se acelera. Lo que pediste está en tránsito. Estate atenta porque lo que llega, llega rápido."
@@ -601,7 +601,7 @@ const CARTAS = {
     amor: "Pausa en una relación intensa. Tiempo para recuperarse antes de avanzar. Inv: fin de la pausa.",
     trabajo: "Tomarse un respiro es estratégico. No es cobardía. Inv: volver a la acción con fuerzas renovadas.",
     dinero: "Momento para no mover el dinero. Esperar. Inv: volver a las inversiones cuando se está descansado.",
-    mensaje: "El cuerpo y la mente necesitan parar. No es cobardía — es sabiduría. Los que descansan cuando deben son los que después pueden seguir cuando importa."
+    mensaje: "El guerrero que no descansa pierde la próxima batalla. No es cobardía hacer silencio — es táctica. ¿Qué pasaría si pararas de luchar por tres días?"
   },
 
   "5_espadas": {
@@ -673,12 +673,12 @@ const CARTAS = {
   paje_espadas: {
     nombre: "Paje de Espadas",
     arcano: "Menor — Espadas",
-    derecha: "Mente curiosa y vigilante que no se pierde nada. Noticias inesperadas que llegan. Alguien joven o con energía fresca en el plano mental.",
+    derecha: "Mente inquieta y vigilante que observa antes de actuar. Hay información circulando — noticias, mensajes, conversaciones — que vale más de lo que parece. Este paje todavía no cortó nada con su espada: está aprendiendo a sostenerla. Si no se usa con cuidado, puede haber malentendidos o chisme disfrazado de dato.",
     invertida: "Habladuría, chismes, palabras que dañan sin intención o con ella.",
     amor: "Comunicación importante que llega. Alguien que habla mucho pero puede decir poco. Inv: rumores o palabras hirientes.",
     trabajo: "Información nueva que cambia el panorama. Inv: mal uso de la información.",
     dinero: "Noticias económicas que hay que escuchar con atención. Inv: desinformación.",
-    mensaje: "Algo nuevo llega a nivel mental. Prestá atención a la información que circula esta semana — puede ser más importante de lo que parece."
+    mensaje: "La espada del paje todavía no cortó nada — está aprendiendo a sostenerla. Ojo con lo que decís antes de tener la información completa."
   },
 
   caballero_espadas: {
