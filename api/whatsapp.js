@@ -95,6 +95,7 @@ async function detectarServicioConIA(mensajeTexto) {
 ¿Está nombrando o eligiendo EXPLÍCITAMENTE un servicio de tarot por su nombre? Solo contá como selección si el usuario dice el nombre del servicio claramente (ej: "quiero la tirada completa", "me llevo el pack claridad", "dame la tirada simple", "quiero el desbloqueo de caminos").
 
 NO contés como selección si solo describe su situación o problema (ej: "quiero ver mi trabajo", "estoy trabado", "tengo problemas de amor").
+- Si solo pregunta el precio ("cuánto sale", "qué precio tiene", "cuánto cuesta") sin expresar intención de contratarlo → respondé "ninguno"
 
 Servicios disponibles: ${serviciosDisponibles.join(', ')}
 
@@ -151,6 +152,22 @@ Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_cam
 
   const resultado = keys.map(key => todos[key] ? { key, ...todos[key] } : null).filter(Boolean);
   return resultado.length > 0 ? resultado : null;
+}
+
+// ── Detectar mensaje puramente conversacional/social ─────────────────────────
+
+async function detectarMensajeConversacional(mensajeTexto) {
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 10,
+    messages: [{
+      role: 'user',
+      content: `Mensaje: "${mensajeTexto}"
+¿Este mensaje es puramente conversacional/social sin ninguna intención de consultar o contratar un servicio de tarot? (saludos de respuesta, respuestas cortas de cortesía, expresiones emocionales sin pedido concreto, chistes, comentarios casuales)
+Respondé solo: si / no`
+    }]
+  });
+  return response.content[0].text.trim().toLowerCase().startsWith('si');
 }
 
 // ── Detectar si piden ver el menú/listado de servicios ───────────────────────
@@ -396,7 +413,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
       // Primero: ¿nombró un servicio concreto? → confirmar antes de mandar el CBU
       const servicioElegido = await detectarServicioConIA(mensajeTexto);
-      if (servicioElegido) {
+
+      // Chequear si el mensaje es una pregunta de precio, no una elección real
+      const esPreguntaPrecio = /cuánto|cuanto|precio|cuesta|vale|sale|costo/i.test(mensajeTexto) &&
+        !/quiero|me llevo|dame|reserv|anot|contrat/i.test(mensajeTexto);
+
+      if (servicioElegido && !esPreguntaPrecio) {
         session.serviciosSugeridos = [servicioElegido];
         session.etapa = 'confirmando_eleccion';
 
@@ -407,9 +429,26 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           `La clienta mencionó "${servicioElegido.nombre}" ($${servicioElegido.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
         );
         break;
+      } else if (servicioElegido && esPreguntaPrecio) {
+        // Solo preguntó el precio — responder sin avanzar en el funnel
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta preguntó el precio de "${servicioElegido.nombre}". Respondé el precio ($${servicioElegido.precio?.toLocaleString('es-AR')}) de forma natural y preguntale si le interesa. No avances al pago todavía.`
+        );
+        break;
       }
 
-      // Segundo: describe una situación → sugerir 2-3 opciones, esperar confirmación
+      // Segundo: chequear si es un mensaje puramente conversacional (sin intención de servicio)
+      const esMensajeConversacional = await detectarMensajeConversacional(mensajeTexto);
+      if (esMensajeConversacional) {
+        const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        break;
+      }
+
+      // Tercero: describe una situación → sugerir 2-3 opciones, esperar confirmación
       const sugeridos = await sugerirServiciosConIA(mensajeTexto);
       if (sugeridos && sugeridos.length > 0) {
         session.serviciosSugeridos = sugeridos;
@@ -464,10 +503,19 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         respuesta = `${confirmacion}|||${datosPago}`;
       } else {
-        // No confirmó — Sofía responde SOLO sobre los servicios sugeridos.
+        // No confirmó — chequear si mencionó un servicio diferente al sugerido
+        const servicioMencionado = await detectarServicioConIA(mensajeTexto);
+        if (servicioMencionado && !sugeridos.some(s => s.key === servicioMencionado.key)) {
+          // La clienta pidió un servicio diferente al que se estaba confirmando → actualizar
+          session.serviciosSugeridos = [servicioMencionado];
+          await saveSession(numero, session);
+        }
+
+        // Sofía responde SOLO sobre los servicios sugeridos (ya actualizados si cambió).
         // PROHIBIDO: saltar al pago, pedir nombre, pedir fecha, mencionar a Luna.
+        const sugeridosActuales = session.serviciosSugeridos || sugeridos;
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        const nombresYPrecios = sugeridos.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ');
+        const nombresYPrecios = sugeridosActuales.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ');
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
