@@ -605,9 +605,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       session.nombre = mensajeTexto.trim().split(' ')[0]; // primer nombre para referencias de Sofía
       session.etapa = 'pidiendo_fecha';
       const esCartaAstralNombre = (session.servicio || '').toLowerCase().includes('carta_astral');
-      respuesta = esCartaAstralNombre
-        ? `un gusto, ${session.nombre} 🌙|||para la carta astral necesito tu fecha de nacimiento (día, mes y año) — y si tenés la hora y la ciudad donde naciste, mejor`
-        : `un gusto, ${session.nombre} 🌙|||¿y tu fecha de nacimiento? (día, mes y año)`;
+      const pedidoFecha = esCartaAstralNombre
+        ? 'fecha de nacimiento (día, mes y año) — si tiene también la hora y la ciudad donde nació, que la agregue'
+        : 'fecha de nacimiento (día, mes y año)';
+      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+      respuesta = await chat(
+        prompt,
+        session.historialChat.slice(0, -1),
+        `La clienta acaba de decir que se llama ${session.nombre} (nombre completo: ${session.nombreCompleto}). Confirmá el nombre de forma cálida y natural en una frase corta — si antes contó algo personal (una situación, un problema), referencialo brevemente. Luego pedíle su ${pedidoFecha}. Máximo 2 oraciones. Sin emoji forzado.`
+      );
       break;
     }
 
@@ -615,7 +621,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     case 'pidiendo_fecha': {
       session.fechaNacimiento = mensajeTexto.trim();
       session.etapa = 'pidiendo_contexto';
-      respuesta = `anotado ✨|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
+      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+      respuesta = await chat(
+        prompt,
+        session.historialChat.slice(0, -1),
+        `La clienta acaba de dar su fecha de nacimiento (${session.fechaNacimiento}). Confirmá brevemente que la anotaste y preguntale si hay algo puntual que quiera que le cuente a luna antes de arrancar — si antes mencionó su situación, referenciarla al preguntar ("para lo que me contabas de..."). Máximo 2 oraciones. Sin emoji forzado.`
+      );
       break;
     }
 
