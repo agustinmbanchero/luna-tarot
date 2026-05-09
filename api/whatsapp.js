@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { getSession, saveSession, deleteSession } = require('../lib/session-store');
+const { getSession, saveSession, deleteSession, getPreguntasRestantes, setPreguntasRestantes, decrementarPregunta } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
@@ -562,6 +562,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
         if (validacion.valido) {
           session.montosPagados.push(session.precioServicio);
+          // Si el servicio es un pack de preguntas, inicializar el contador en Redis
+          const esPackAuto = precios.packs_preguntas[session.servicio];
+          if (esPackAuto) {
+            await setPreguntasRestantes(numero, esPackAuto.preguntas);
+          }
           await new Promise(r => setTimeout(r, 800));
           await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 1000));
@@ -631,6 +636,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             return '';
           }
           sc.montosPagados.push(sc.precioServicio);
+          // Si el servicio es un pack de preguntas, inicializar el contador en Redis
+          const esPackAdmin = precios.packs_preguntas[sc.servicio];
+          if (esPackAdmin) {
+            await setPreguntasRestantes(clienteNum, esPackAdmin.preguntas);
+          }
           const confirmaciones = ['listo, pago recibido', 'perfecto, ya está confirmado', 'todo bien con el pago'];
           const conf = confirmaciones[Math.floor(Math.random() * confirmaciones.length)];
           if (sc.nombre && sc.fechaNacimiento) {
@@ -742,6 +752,53 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       if (!session.historialConsulta) {
         const contextoTrivial = /^(no[s]?[eé]|dale|ok|sí|si|bueno|nada|igual|todo|algo|listo|claro|bien)$/i.test((session.contextoPorCliente || '').trim());
         session.historialConsulta = (!contextoTrivial && session.contextoPorCliente) ? session.contextoPorCliente : mensajeTexto;
+      }
+
+      // ── Pregunta puntual: 1 carta + respuesta directa en un solo burst ──────────
+      if (session.servicio === 'pregunta_puntual' && !session.cartasEnviadas) {
+        session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
+        const tema = detectarTema(session.historialConsulta || mensajeTexto);
+        session.cartasLanzadas = tirarCartas(1, tema);
+        session.cartasEnviadas = true;
+        await saveSession(numero, session);
+
+        const cartaId = session.cartasLanzadas[0];
+        try {
+          await enviarImagen(numero, urlCarta(cartaId), nombreCarta(cartaId));
+        } catch (e) {
+          await enviarMensaje(numero, nombreCarta(cartaId));
+        }
+        await new Promise(r => setTimeout(r, 800));
+
+        const promptPuntual = getLunaPrompt({
+          cartasIds: session.cartasLanzadas,
+          nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
+          servicio: session.servicio,
+          historialSofia: buildResumenSofia(session.historialChat),
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
+        const datosClientePuntual = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
+        const consultaPuntual = session.historialConsulta && session.historialConsulta.trim().length > 2
+          ? `"${session.historialConsulta}"`
+          : 'una pregunta general';
+
+        try {
+          respuesta = await chat(
+            promptPuntual,
+            session.historialChat.slice(-4),
+            `Consulta de ${datosClientePuntual}. Pregunta: ${consultaPuntual}.\n\nCarta: ${nombreCarta(cartaId)}\n\nRespondé la pregunta directamente usando esta carta. Máximo 2-3 mensajes con |||. Sin apertura larga ni síntesis extensa — la clienta hizo una pregunta puntual, respondéla. Sin emojis.`,
+            4096
+          );
+          session.datosBiograficos = 'leido';
+          session.etapa = 'upsell';
+          await saveSession(numero, session);
+        } catch (err) {
+          console.error('Error en lectura pregunta puntual:', err);
+          // No guardar cambios en sesión → el próximo mensaje reintenta
+          respuesta = 'dame un momento, tengo algo en la energía que necesito terminar de leer. escribime de nuevo en un ratito';
+        }
+        break;
       }
 
       const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
@@ -895,6 +952,33 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
 
     // ── Upsell post-consulta ─────────────────────────────────────────────────
     case 'upsell': {
+      // Si tiene pack de preguntas, verificar si quedan preguntas disponibles
+      const esPaquete = precios.packs_preguntas[session.servicio];
+      if (esPaquete) {
+        const restantes = await getPreguntasRestantes(numero);
+        if (restantes !== null && restantes <= 0) {
+          // Se acabaron las preguntas — ofrecer recarga sin que Luna responda la consulta
+          const prompt = getLunaPrompt({
+            cartasIds: session.cartasLanzadas,
+            nombreCliente: session.nombre,
+            nombreCompleto: session.nombreCompleto,
+            servicio: session.servicio,
+            historialSofia: buildResumenSofia(session.historialChat),
+            contextoDadoPorCliente: session.contextoPorCliente
+          });
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta tiene 0 preguntas disponibles en su pack. No respondas la consulta nueva. Decíle de forma cálida y directa que se le terminaron las preguntas del pack, y sugerile que sume más preguntas o algún servicio complementario. Sin emojis.`
+          );
+          break;
+        }
+        // Tiene preguntas disponibles — decrementar y continuar
+        if (restantes !== null) {
+          await decrementarPregunta(numero);
+        }
+      }
+
       const prompt = getLunaPrompt({
         cartasIds: session.cartasLanzadas,
         nombreCliente: session.nombre,
