@@ -52,42 +52,46 @@ module.exports = async function handler(req, res) {
     let procesados = 0;
 
     for (const numero of pendientes) {
-      const session = await getSession(numero);
-      if (session.etapa !== 'esperando_luna') continue;
-      if (!session.lunaDebeEscribirEn || Date.now() < session.lunaDebeEscribirEn) continue;
+      try {
+        const session = await getSession(numero);
+        if (session.etapa !== 'esperando_luna') continue;
+        if (!session.lunaDebeEscribirEn || Date.now() < session.lunaDebeEscribirEn) continue;
 
-      // Iniciar Luna — NO guardar sesión antes de chat() para evitar estado corrupto si hay timeout
-      const nombreMostrar = session.nombreCompleto || session.nombre || '';
-      const datosTexto = [
-        nombreMostrar,
-        session.fechaNacimiento ? `nacida/o el ${session.fechaNacimiento}` : ''
-      ].filter(Boolean).join(', ');
+        // Iniciar Luna — NO guardar sesión antes de chat() para evitar estado corrupto si hay timeout
+        const nombreMostrar = session.nombreCompleto || session.nombre || '';
+        const datosTexto = [
+          nombreMostrar,
+          session.fechaNacimiento ? `nacida/o el ${session.fechaNacimiento}` : ''
+        ].filter(Boolean).join(', ');
 
-      const contextoTexto = session.contextoPorCliente
-        ? `quiere consultar sobre: "${session.contextoPorCliente}"`
-        : '';
+        const contextoTexto = session.contextoPorCliente
+          ? `quiere consultar sobre: "${session.contextoPorCliente}"`
+          : '';
 
-      const prompt = getLunaPrompt({
-        cartasIds: session.cartasLanzadas || [],
-        nombreCliente: session.nombre,
-        nombreCompleto: session.nombreCompleto,
-        servicio: session.servicio,
-        historialSofia: session.resumenSofia,
-        contextoDadoPorCliente: session.contextoPorCliente
-      });
+        const prompt = getLunaPrompt({
+          cartasIds: session.cartasLanzadas || [],
+          nombreCliente: session.nombre,
+          nombreCompleto: session.nombreCompleto,
+          servicio: session.servicio,
+          historialSofia: session.resumenSofia,
+          contextoDadoPorCliente: session.contextoPorCliente
+        });
 
-      const mensajeLuna = await chat(
-        prompt, [],
-        `Presentate como Luna en una frase cálida y directa. Corroborá los datos del cliente de forma natural: "${datosTexto}". ${contextoTexto ? `Sabés que ${contextoTexto}.` : ''} Preguntá si quiere agregar algo antes de arrancar. Sin emojis. Usá ||| para separar mensajes.`
-      );
+        const mensajeLuna = await chat(
+          prompt, [],
+          `Presentate como Luna en una frase cálida y directa. Corroborá los datos del cliente de forma natural: "${datosTexto}". ${contextoTexto ? `Sabés que ${contextoTexto}.` : ''} Preguntá si quiere agregar algo antes de arrancar. Sin emojis. Usá ||| para separar mensajes.`
+        );
 
-      // Solo marcar como iniciado si chat() tuvo éxito
-      session.etapa = 'con_luna';
-      session.lunaRecopiloData = true;
-      session.historialChat.push({ role: 'assistant', content: mensajeLuna });
-      await saveSession(numero, session);
-      await enviarMensajesMultiples(numero, mensajeLuna);
-      procesados++;
+        // Solo marcar como iniciado si chat() tuvo éxito
+        session.etapa = 'con_luna';
+        session.lunaRecopiloData = true;
+        session.historialChat.push({ role: 'assistant', content: mensajeLuna });
+        await saveSession(numero, session);
+        await enviarMensajesMultiples(numero, mensajeLuna);
+        procesados++;
+      } catch (err) {
+        console.error('Error procesando sesión', numero, err.message);
+      }
     }
 
     res.status(200).json({ ok: true, procesados });
