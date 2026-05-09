@@ -463,6 +463,30 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         break;
       }
 
+      // Si detectarServicioConIA no encontró nada pero la clienta menciona un ordinal
+      // y ya hay servicios sugeridos en sesión, intentar resolver la referencia
+      if (!servicioElegido && !esPreguntaPrecio && session.serviciosSugeridos?.length > 1) {
+        const esOrdinal = /\b(primer[oa]|la primera|el primero|segunda|la segunda|el segundo|esa|ese|eso|la última|el último)\b/i.test(mensajeTexto);
+        if (esOrdinal) {
+          let indice = 0; // default: primera
+          if (/\b(segund[oa]|la segunda|el segundo)\b/i.test(mensajeTexto)) indice = 1;
+          if (/\b(últim[oa]|la última|el último)\b/i.test(mensajeTexto)) indice = session.serviciosSugeridos.length - 1;
+          const servicioElegidoPorOrdinal = session.serviciosSugeridos[indice];
+          if (servicioElegidoPorOrdinal) {
+            session.serviciosSugeridos = [servicioElegidoPorOrdinal];
+            session.etapa = 'confirmando_eleccion';
+            await saveSession(numero, session);
+            const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
+            respuesta = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `La clienta eligió "${servicioElegidoPorOrdinal.nombre}" ($${servicioElegidoPorOrdinal.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
+            );
+            break;
+          }
+        }
+      }
+
       // Segundo: chequear si es un mensaje puramente conversacional (sin intención de servicio)
       const esMensajeConversacional = await detectarMensajeConversacional(mensajeTexto);
       if (esMensajeConversacional) {
@@ -542,7 +566,15 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}. Respondé solo sobre eso — si pregunta algo sobre el servicio, respondé; si duda, ayudala a decidir. Terminá siempre preguntando si lo reserva. PROHIBIDO ABSOLUTAMENTE: mencionar alias, monto, pedir nombre, pedir fecha, mencionar a Luna, avanzar al pago.`
+          `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}.
+
+Respondé naturalmente pero SIEMPRE terminá volviendo a la pregunta de confirmación del servicio.
+
+Si pregunta por el nombre: decíle que el nombre lo pide Luna directamente cuando empieza la consulta — vos solo necesitás saber si confirma el servicio.
+Si pregunta por precio/detalle del servicio: respondé brevemente y volvé a la confirmación.
+Si expresa dudas: ayudala a decidir y terminá preguntando si lo confirma.
+
+PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, o cualquier dato personal. NUNCA decir que Luna está disponible, que ya avisó, o que Luna va a escribir. NUNCA avanzar el flujo sin confirmación explícita.`
         );
       }
       break;
