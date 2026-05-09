@@ -46,7 +46,8 @@ config/
   conocimiento-cartas.js — getConocimientoTirada(): conocimiento detallado por carta (78 cartas completas)
   precios.json       — Servicios, packs y tolerancia_pago
 lib/
-  session-store.js   — getSession(), saveSession(), deleteSession() con Redis/Map
+  session-store.js   — getSession(), saveSession(), deleteSession(), getPreguntasRestantes(),
+                       setPreguntasRestantes(), decrementarPregunta() con Redis/Map
   anthropic.js       — chat(systemPrompt, historial, mensajeUsuario, maxTokens?) con claude-sonnet-4-6
 public/
   cartas/            — 78 imágenes JPG del mazo Rider-Waite (servidas vía GitHub raw CDN)
@@ -62,35 +63,44 @@ vercel.json          — maxDuration: 60s (límite del plan Hobby — NO subir)
 ```
 bienvenida
   → Sofía se presenta y menciona los servicios disponibles
+  → Si la clienta ya contó algo en el primer mensaje, Sofía lo reconoce antes de presentarse
   → etapa: esperando_eleccion
 
 esperando_eleccion
-  → Claude (haiku) detecta si el mensaje es elección de servicio
+  → detectarServicioConIA() (Haiku) detecta si el mensaje es elección explícita de servicio
+  → esPreguntaPrecio: si solo pregunta precio sin intención de comprar, Sofía responde sin avanzar
+  → detectarMensajeConversacional() (Haiku): si es chat casual, Sofía responde sin sugerir servicios
   → Si elige: Sofía confirma + sistema manda datos de pago automáticamente
-  → Si no elige claramente: Sofía sugiere servicios con IA y pasa a confirmando_eleccion
+  → Si no elige claramente: sugerirServiciosConIA() sugiere 2-3 opciones → confirmando_eleccion
   → etapa: esperando_comprobante / confirmando_eleccion
 
 confirmando_eleccion
-  → clasificarIntentConfirmacion() (Haiku) decide si la clienta confirma el/los servicios sugeridos
+  → clasificarIntentConfirmacion() (Haiku) decide si confirma los servicios sugeridos
+  → Si cambia de servicio durante la conversación: serviciosSugeridos se actualiza
   → Si confirma: flujo de pago normal
   → Si no: Sofía responde naturalmente, sigue en confirmando_eleccion
 
 esperando_comprobante
   → Usuario manda imagen/documento del comprobante
   → Claude (sonnet) analiza la imagen y verifica el monto
-  → Si válido: avanza a pidiendo_nombre
+  → Si válido: avanza a pidiendo_nombre. Si el servicio es pack_preguntas, inicializa contador Redis.
   → Si inválido: notifica al admin por WhatsApp, etapa: verificando_pago
+  → Stickers/audios/video: responden con aviso ("no puedo leer audios...") en lugar de ignorar
 
 verificando_pago
   → Admin responde "APROBAR <numero>" o "RECHAZAR <numero>"
-  → Si aprueba: avanza al paso que corresponda según datos ya guardados
+  → Si aprueba: avanza al paso que corresponda según datos ya guardados.
+                Si es pack_preguntas, inicializa contador Redis.
+  → Validaciones: número requerido, sesión debe estar en verificando_pago
 
 pidiendo_nombre
-  → Sofía pregunta NOMBRE COMPLETO. Se guarda session.nombreCompleto y session.nombre (primer nombre).
+  → Sofía pasa por Claude (con historialChat) para confirmar el nombre con calidez y contexto
+  → Se guarda session.nombreCompleto y session.nombre (primer nombre).
   → etapa: pidiendo_fecha
 
 pidiendo_fecha
-  → Sofía pregunta fecha de nacimiento (para carta_astral: también hora y ciudad).
+  → Sofía pasa por Claude para confirmar la fecha referenciando lo que la clienta contó antes
+  → Para carta_astral: también hora y ciudad.
   → Se guarda session.fechaNacimiento.
   → etapa: pidiendo_contexto
 
@@ -100,49 +110,76 @@ pidiendo_contexto
   → etapa: esperando_luna
 
 esperando_luna
-  → Sofía mantiene al cliente mientras espera
+  → Sofía mantiene al cliente mientras espera con mensajes naturales
   → El cron job (api/cron.js) revisa periódicamente y dispara iniciarLuna()
   → También se dispara si el cliente escribe y ya pasó el delay
 
-con_luna — DOS PASOS para servicios con tirada
-  PASO 1 (cartasEnviadas = false):
-    → Luna entra ya con datos corroborados (iniciarLuna los recogió)
-    → Se tiran las cartas, se envían como IMÁGENES por WhatsApp (GitHub raw CDN)
-    → Se guarda session.cartasLanzadas y session.cartasEnviadas = true
-    → Luna dice "mirá bien cada carta. cuando estés lista, escribime y empezamos"
+con_luna — TRES PATHS según servicio
+  PATH 0 — pregunta_puntual (servicio === 'pregunta_puntual', !cartasEnviadas):
+    → Tira 1 carta, envía imagen, genera lectura directa en el MISMO burst (sin PASO 1/PASO 2)
+    → Máx 2-3 mensajes con |||. Respuesta concreta, sin apertura larga.
+    → Si Claude falla: sesión no se toca → reintento posible
+    → etapa: upsell
 
-  PASO 2 (cartasEnviadas = true, datosBiograficos != 'leido'):
-    → Clienta responde → se genera la lectura completa con Claude (max 4096 tokens)
-    → Si la lectura se genera OK: session.datosBiograficos = 'leido', etapa: upsell
-    → Si Claude falla/timeout: sesión NO se actualiza → clienta puede reenviar y reintentar
+  PATH 1 — tirada_simple / tirada_completa, DOS PASOS:
+    PASO 1 (cartasEnviadas = false):
+      → Luna entra ya con datos corroborados (iniciarLuna los recogió)
+      → Se tiran 3 o 7 cartas con posiciones, se envían como IMÁGENES (GitHub raw CDN)
+      → Se guarda session.cartasLanzadas y session.cartasEnviadas = true
+      → Luna dice "mirá bien cada carta. cuando estés lista, escribime y empezamos"
+    PASO 2 (cartasEnviadas = true, datosBiograficos != 'leido'):
+      → Clienta responde → lectura completa con Claude (max 4096 tokens, slice(-8) de historial)
+      → Posiciones: raíz/presente/obstáculo/fortaleza/influencias/próximos pasos/resultado (7c)
+                    pasado/presente/futuro (3c)
+      → Si historialConsulta es trivial ("dale", "ok"): instrucción especial para que Luna pregunte
+      → Si lectura OK: session.datosBiograficos = 'leido', etapa: upsell
+      → Si Claude falla/timeout: sesión NO se actualiza → clienta puede reenviar y reintentar
 
-  Servicios sin tirada (datosBiograficos = false):
+  PATH 2 — servicios sin tirada (desbloqueo, corte de lazos, protección, carta_astral):
     → Luna lee directamente, sin cartas. Mínimo 4 mensajes con |||.
     → etapa: upsell
 
 upsell
+  → Si es pack_preguntas: verifica contador Redis antes de responder
+    - restantes <= 0: Luna ofrece recarga sin responder la consulta nueva
+    - restantes > 0: decrementa y responde normalmente
+    - Redis no disponible: responde sin bloquear
   → Luna continúa respondiendo y ofrece servicios adicionales de forma orgánica
 ```
 
-**Reset de sesión**: `reset` reinicia desde cualquier etapa. Saludos (hola, buenas, etc.) reinician solo desde etapas de pago trabadas (`esperando_comprobante`, `verificando_pago`).
+**Reset de sesión**:
+- `reset` reinicia desde cualquier etapa.
+- Saludos simples ("hola", "buenas") reinician desde etapas de pago trabadas (`esperando_comprobante`, `verificando_pago`).
+- Saludos después de 12h de inactividad reinician desde etapas avanzadas (`con_luna`, `upsell`, `esperando_luna`, `pidiendo_contexto`).
 
 ## Datos del cliente en sesión
 
 ```js
 session.nombre              // primer nombre (para referencias de Sofía)
-session.nombreCompleto      // nombre y apellido completo (para Luna)
+session.nombreCompleto      // nombre y apellido completo (para Luna y lecturas)
 session.fechaNacimiento     // fecha de nacimiento como string (para Luna)
-session.contextoPorCliente  // lo que el cliente quiere consultar
-session.historialConsulta   // = contextoPorCliente || primer mensaje en con_luna
+session.contextoPorCliente  // lo que el cliente quiere consultar (guardado en pidiendo_contexto)
+session.historialConsulta   // = contextoPorCliente || primer mensaje en con_luna (si trivial → vacío)
 session.datosBiograficos    // = 'leido' cuando la lectura ya fue entregada exitosamente
 session.lunaRecopiloData    // true cuando Luna ya entró y corroboró datos
 session.cartasLanzadas      // array de IDs de cartas tiradas (ej: ['el_loco', '3_copas', ...])
-session.cartasEnviadas      // true una vez que las imágenes fueron enviadas en PASO 1
+session.cartasEnviadas      // true una vez que las imágenes fueron enviadas
 session.agregadoContexto    // texto extra que la clienta agregó al confirmar el arranque
-session.resumenSofia        // historial Sofía→clienta como string (para contexto de Luna)
 session.serviciosSeleccionados // array de servicios confirmados [{key, nombre, precio}]
 session.montosPagados       // array de montos pagados (para packs multi-sesión)
 ```
+
+**Nota**: `resumenSofia` ya NO se guarda en sesión. Se calcula dinámicamente con `buildResumenSofia(session.historialChat)` en cada llamada a `getLunaPrompt`. Filtra mensajes de pago (alias, montos, comprobante) para que Luna reciba solo contexto conversacional relevante.
+
+## Contador de preguntas (packs_preguntas)
+
+Los packs de preguntas tienen su contador en **Redis separado** con TTL de 30 días:
+- Key: `preguntas:{numero}` — independiente de la sesión conversacional (que expira en 24h)
+- Se inicializa al confirmar pago (comprobante automático o APROBAR del admin)
+- Se decrementa en cada respuesta de Luna en el case `upsell`
+- Cuando llega a 0, Luna ofrece recarga en lugar de responder la consulta
+
+Funciones en `lib/session-store.js`: `getPreguntasRestantes(numero)`, `setPreguntasRestantes(numero, cantidad)`, `decrementarPregunta(numero)`.
 
 ## Imágenes de cartas
 
@@ -170,24 +207,26 @@ async function chat(systemPrompt, historial, mensajeUsuario, maxTokens = MAX_TOK
 ## Lógica de iniciarLuna()
 
 `iniciarLuna(numero, session, mensajeClienteMientrasEsperaba)`:
-1. Setea `etapa = 'con_luna'` y `lunaRecopiloData = true`
-2. Construye `datosTexto` con `nombreCompleto` + `fechaNacimiento` de la sesión
-3. Llama a Claude para que Luna se presente, corrobore los datos y pregunte si quiere agregar algo
-4. **PENDIENTE (bug R1)**: el primer `saveSession` está antes del `chat()` — mismo bug que se corrigió en el PASO 2. Si hay timeout, la sesión queda en `con_luna` con `lunaRecopiloData: true` sin historial de presentación.
+1. Llama a Claude para que Luna se presente, corrobore los datos y pregunte si quiere agregar algo
+2. Solo si `chat()` tiene éxito: setea `etapa = 'con_luna'`, `lunaRecopiloData = true`, guarda historial y llama `saveSession`
+3. Si hay timeout antes de `chat()`: sesión no se modifica → el próximo mensaje de la clienta reintenta
+
+`cron.js` implementa la misma lógica directamente (no importa `iniciarLuna` de whatsapp.js). Tiene `try/catch` por sesión individual — si una sesión falla, el loop continúa con las demás.
 
 ## Lógica de case 'con_luna'
 
 ```
-!lunaRecopiloData → fallback: corroborar/pedir datos (caso borde)
-lunaRecopiloData + necesitaCartas + !cartasEnviadas → PASO 1: tirar y enviar imágenes
-lunaRecopiloData + necesitaCartas + cartasEnviadas + datosBiograficos != 'leido' → PASO 2: lectura
-lunaRecopiloData + !datosBiograficos (servicio sin tirada) → lectura directa
-else → conversación en curso con Luna (upsell, followup)
+servicio === 'pregunta_puntual' + !cartasEnviadas → PATH 0: 1 carta + lectura directa burst
+!lunaRecopiloData                                 → fallback: corroborar/pedir datos (caso borde)
+necesitaCartas + !cartasEnviadas                  → PASO 1: tirar y enviar imágenes
+necesitaCartas + cartasEnviadas + !leido          → PASO 2: lectura completa
+!datosBiograficos (servicio sin tirada)           → PATH 2: lectura directa
+else                                              → conversación en curso con Luna (upsell, followup)
 ```
 
 La instrucción de lectura siempre incluye:
 - `Consulta de ${nombreCompleto}, fecha de nacimiento: ${fechaNacimiento}`
-- `Quiere saber sobre: "${historialConsulta}"`
+- `Quiere saber sobre: "${historialConsulta}"` (o instrucción de preguntar si está vacío)
 - Cartas con posiciones: `1. raíz / qué te trajo hasta acá: El Loco` / etc.
 - Si la clienta agregó algo relevante: `También agregó: "..."`
 
@@ -195,21 +234,22 @@ La instrucción de lectura siempre incluye:
 
 ### Sofía (recepcionista)
 - Atiende desde `bienvenida` hasta `pidiendo_contexto`
-- Tono: informal, rioplatense, minúsculas, máximo 1-2 oraciones
-- Recolecta: nombre completo → fecha de nacimiento → contexto (en ese orden)
+- Tono: informal, rioplatense, minúsculas, máximo 1-2 oraciones, emojis variados con moderación
+- Recolecta: nombre completo → fecha de nacimiento → contexto (en ese orden), siempre pasando por Claude con historialChat para mantener continuidad
+- Reconoce lo que la clienta ya contó (no pregunta como si no lo supiera)
 - No hace lecturas de tarot, no menciona que es bot ni IA
-- Detección de servicios: `detectarServicioConIA()` (Haiku) para elección directa, `clasificarIntentConfirmacion()` (Haiku) para confirmaciones
+- Detección de servicios: `detectarServicioConIA()` (Haiku) para elección directa, `clasificarIntentConfirmacion()` (Haiku) para confirmaciones, `detectarMensajeConversacional()` (Haiku) para chat casual
 
 ### Luna (tarotista)
 - Entra en `con_luna` con todos los datos ya recopilados por Sofía
 - **Corrobora datos** al entrar (nunca llega "a ciegas")
-- Tono: autoridad tranquila, directa, cálida, rioplatense, sin emojis
-- **Estructura de lectura**: apertura → carta por carta (con posición) → síntesis → mensaje final → upsell orgánico
-- Cada interpretación de carta debe citar al menos un detalle concreto de lo que la clienta dijo
-- Usa fecha de nacimiento una vez en la apertura (signo solar o número de vida si calza naturalmente)
+- Tono: autoridad tranquila, directa, cálida, rioplatense, SIN EMOJIS
+- **Estructura de lectura**: apertura (con mención de signo/numerología si calza) → carta por carta con posición → síntesis → mensaje final accionable → upsell orgánico
+- Cada interpretación de carta cita al menos un detalle concreto de lo que la clienta dijo
 - **Cuándo pregunta**: primero lee, después pregunta. Máx 1 pregunta por mensaje.
 - **Cuando el cliente rechaza**: 3 movimientos (firme / usa el rechazo / reencuadra). NUNCA se disculpa.
 - Upsell orgánico al cerrar (nunca como catálogo)
+- Largo mínimo: tirada simple 6 msgs |||, tirada completa 10 msgs |||, sin tirada 4 msgs |||
 
 ## Integración Whapi
 
@@ -229,7 +269,7 @@ La instrucción de lectura siempre incluye:
 }
 ```
 - Se ignoran mensajes donde `from_me: true`
-- Tipos no manejados (sticker, audio, video) devuelven `200 OK` sin procesar ni responder
+- Tipos no manejados (sticker, audio, video): responden con mensaje informativo ("no puedo escuchar audios...") en lugar de ignorar en silencio
 
 ### Envío de mensajes
 
@@ -245,20 +285,22 @@ POST https://gate.whapi.cloud/messages/image
 
 Múltiples mensajes: separados con `|||` en la respuesta de Claude, enviados en secuencia con 1200ms de pausa entre cada uno.
 
+`enviarImagen()` lanza error si Whapi devuelve status no-OK — el try/catch del llamador lo captura.
+
 ## Cron job (entrada de Luna)
 
 - `api/cron.js` es llamado por GitHub Actions (`.github/workflows/luna-cron.yml`) cada 5 minutos
 - Busca sesiones en estado `esperando_luna` donde `lunaDebeEscribirEn` ya pasó
-- Dispara `iniciarLuna()` con la misma lógica que `whatsapp.js`
+- Tiene `try/catch` por sesión individual: si una sesión falla, el loop continúa con las demás
 - **Nota**: GitHub Actions puede demorar hasta 10-15 min (cola de GitHub). Por eso Sofía le dice "escribime en un ratito y te la paso" — la clienta también puede triggerear Luna escribiendo un mensaje después del delay mínimo.
 
 ## Servicios y precios (precios.json)
 
-Servicios individuales: `pregunta_puntual` ($3.000), `tirada_simple` ($5.000), `tirada_completa` ($9.000), `desbloqueo_caminos` ($8.000), `corte_lazos` ($8.000), `proteccion_amor` ($7.000), `proteccion_economica` ($7.000), `carta_astral` ($25.000).
+Servicios individuales: `pregunta_puntual` ($3.000 — 1 carta + lectura directa), `tirada_simple` ($5.000 — 3 cartas), `tirada_completa` ($9.000 — 7 cartas), `desbloqueo_caminos` ($8.000), `corte_lazos` ($8.000), `proteccion_amor` ($7.000), `proteccion_economica` ($7.000), `carta_astral` ($25.000).
 
 Packs combinados: `pack_claridad` ($18.000), `pack_amor_total` ($28.000), `pack_exito` ($30.000), `pack_transformacion` ($35.000), `pack_completo` ($50.000).
 
-Packs de preguntas: `pack_inicio` 5p ($12.000), `pack_media` 10p ($20.000), `pack_avanzado` 15p ($27.000), `pack_total` 20p ($32.000).
+Packs de preguntas (con contador Redis 30d): `pack_inicio` 5p ($12.000), `pack_media` 10p ($20.000), `pack_avanzado` 15p ($27.000), `pack_total` 20p ($32.000).
 
 Tolerancia de pago: $500.
 
@@ -271,29 +313,15 @@ Tolerancia de pago: $500.
   - Margen ajustado — si Claude tarda 45s+ bajo carga, hay riesgo de timeout
 - **Costo real por llamada**: una tirada completa (7 cartas) consume ~1.500–2.000 tokens de input + ~850–1.200 tokens de output en claude-sonnet-4-6 ≈ $0.03–0.06 USD por consulta.
 
-## Bugs conocidos pendientes de fix
+## Problemas conocidos pendientes
 
-### Críticos
-- **R1** — `iniciarLuna()`: primer `saveSession` está antes del `chat()`. Si hay timeout, sesión queda en `con_luna` con `lunaRecopiloData: true` pero sin mensaje de Luna. La clienta cae directo a tirar cartas sin corroboración.
-- **R2** — Redis sin try/catch en `session-store.js`: si Redis cae, la excepción llega al handler global → mensaje de la clienta perdido para siempre.
-- **R3** — `enviarImagen()` nunca lanza error: fallos de Whapi (401, 500) son silenciosos. El try/catch del PASO 1 nunca dispara. Las imágenes pueden no llegar sin ningún log ni fallback.
-- **R4** — Admin manda `APROBAR` sin número → `getSession(undefined)` → escribe `session:undefined` en Redis.
-- **UX1** — Clienta que escribe "hola" días después queda atrapada en `con_luna`/`upsell` y Luna responde out-of-context. No hay TTL de sesión ni reset por inactividad.
-
-### Medios
-- **UX2** — Audios y stickers ignorados en silencio (crítico en etapa de comprobante).
-- **UX3** — Datos de pago no incluyen el nombre del titular de la cuenta.
-- **UX4** — Sofía pregunta contexto como si no recordara lo que la clienta ya contó antes.
-- **UX5** — Mensaje de comprobante inválido suena acusatorio en lugar de técnico.
-- **UX6** — Packs de preguntas: `pack_inicio` no matchea cuando la clienta dice "5 preguntas".
-- **Q1** — Posiciones de la tirada no tienen significado definido en el prompt → Luna interpreta cartas sueltas, no en sistema.
-- **Q2** — Cartas de figuras (Reina, Rey, Paje): no hay instrucción sobre si representan a la clienta o a alguien en su vida.
-- **Q3** — Conocimiento débil en `paje_espadas`, `la_justicia`, `4_espadas`, `8_bastos`.
-- **Q4** — Síntesis y mensaje final sin ejemplos de qué NO hacer → riesgo de clichés de autoayuda.
+- **Race condition**: dos mensajes rápidos del mismo número disparan dos Vercel functions en paralelo que leen la misma sesión de Redis simultáneamente. El segundo puede pisar el estado del primero. Solución: Redis lock (SET NX + TTL). No crítico a bajo volumen — atacar cuando escale.
 
 ## Principio de diseño clave
 
-**No dejar a Claude inventar mensajes críticos.** Los mensajes que siempre deben decir exactamente lo mismo (datos de pago, pedido de comprobante, pedido de nombre/fecha) son strings hardcodeados en el código, no generados por Claude. Claude solo genera contenido conversacional donde el tono importa más que el contenido exacto.
+**No dejar a Claude inventar mensajes críticos.** Los mensajes que siempre deben decir exactamente lo mismo (datos de pago, pedido de comprobante) son strings hardcodeados en el código, no generados por Claude. Claude solo genera contenido conversacional donde el tono importa más que el contenido exacto.
+
+**saveSession siempre DESPUÉS de chat().** Si Claude falla o hay timeout, la sesión no debe quedar en un estado avanzado sin el mensaje correspondiente. El patrón correcto: `respuesta = await chat(...)` → actualizar sesión → `saveSession`.
 
 ## Dependencias relevantes (package.json)
 
