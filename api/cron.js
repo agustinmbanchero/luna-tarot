@@ -10,6 +10,17 @@ function formatNumero(numero) {
   return `${numero.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
 }
 
+function buildResumenSofia(historialChat) {
+  const esRuidoPago = (m) => {
+    const t = typeof m.content === 'string' ? m.content : '';
+    return /\*Alias:\*|\*Titular:\*|\*Monto|\*Total:|mandame la captura|comprobante de la transferencia|para reservar tu lugar/i.test(t);
+  };
+  return historialChat
+    .filter(m => !esRuidoPago(m))
+    .map(m => `${m.role === 'user' ? 'Clienta' : 'Sofía'}: ${m.content}`)
+    .join('\n');
+}
+
 async function enviarMensaje(numero, texto) {
   const to = formatNumero(numero);
   const res = await fetch(`${WHAPI_URL}/messages/text`, {
@@ -73,7 +84,7 @@ module.exports = async function handler(req, res) {
           nombreCliente: session.nombre,
           nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
-          historialSofia: session.resumenSofia,
+          historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
 

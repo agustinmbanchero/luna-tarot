@@ -26,6 +26,19 @@ function formatNumero(numero) {
   return `${limpio}@s.whatsapp.net`;
 }
 
+// ── Resumen dinámico del historial de Sofía para Luna ────────────────────────
+
+function buildResumenSofia(historialChat) {
+  const esRuidoPago = (m) => {
+    const t = typeof m.content === 'string' ? m.content : '';
+    return /\*Alias:\*|\*Titular:\*|\*Monto|\*Total:|mandame la captura|comprobante de la transferencia|para reservar tu lugar/i.test(t);
+  };
+  return historialChat
+    .filter(m => !esRuidoPago(m))
+    .map(m => `${m.role === 'user' ? 'Clienta' : 'Sofía'}: ${m.content}`)
+    .join('\n');
+}
+
 // ── Helpers de envío ──────────────────────────────────────────────────────────
 
 async function enviarMensaje(numero, texto) {
@@ -326,7 +339,7 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     nombreCliente: session.nombre,
     nombreCompleto: session.nombreCompleto,
     servicio: session.servicio,
-    historialSofia: session.resumenSofia,
+    historialSofia: buildResumenSofia(session.historialChat),
     contextoDadoPorCliente: session.contextoPorCliente
   });
 
@@ -694,16 +707,6 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     // ── Pedir contexto para Luna ─────────────────────────────────────────────
     case 'pidiendo_contexto': {
       session.contextoPorCliente = mensajeTexto;
-      // Filtrar mensajes de pago (alias, monto, comprobante) — son ruido para Luna
-      const esRuidoPago = (m) => {
-        const t = typeof m.content === 'string' ? m.content : '';
-        return /\*Alias:\*|\*Titular:\*|\*Monto|\*Total:|mandame la captura|comprobante de la transferencia|para reservar tu lugar/i.test(t);
-      };
-      session.resumenSofia = session.historialChat
-        .slice(0, -1)
-        .filter(m => !esRuidoPago(m))
-        .map(m => `${m.role === 'user' ? 'Clienta' : 'Sofía'}: ${m.content}`)
-        .join('\n');
       session.etapa = 'esperando_luna';
 
       // Delay aleatorio entre 15s y 45s — suficiente para que parezca real sin que el cliente espere mucho
@@ -754,7 +757,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           nombreCliente: session.nombre,
           nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
-          historialSofia: session.resumenSofia,
+          historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
         if (tieneDatos) {
@@ -830,7 +833,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           nombreCliente: session.nombre,
           nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
-          historialSofia: session.resumenSofia,
+          historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
         try {
@@ -862,7 +865,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           nombreCliente: session.nombre,
           nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
-          historialSofia: session.resumenSofia,
+          historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
         const datosClienteDirecto = `${session.nombreCompleto || session.nombre || ''}, fecha de nacimiento: ${session.fechaNacimiento || 'no disponible'}`;
@@ -882,7 +885,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
           nombreCliente: session.nombre,
           nombreCompleto: session.nombreCompleto,
           servicio: session.servicio,
-          historialSofia: session.resumenSofia,
+          historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
         respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
@@ -897,7 +900,7 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         nombreCliente: session.nombre,
         nombreCompleto: session.nombreCompleto,
         servicio: session.servicio,
-        historialSofia: session.resumenSofia,
+        historialSofia: buildResumenSofia(session.historialChat),
         contextoDadoPorCliente: session.contextoPorCliente
       });
       respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
