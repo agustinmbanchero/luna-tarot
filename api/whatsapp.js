@@ -906,7 +906,13 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         break;
       }
 
-      const necesitaCartas = session.servicio?.toLowerCase().includes('tirada') && (session.cartasLanzadas || []).length === 0;
+      const servicioKey = session.serviciosSeleccionados?.[0]?.key;
+      const packDef = precios.packs_combinados?.[servicioKey];
+      const necesitaCartas = (
+        session.servicio?.toLowerCase().includes('tirada') ||
+        packDef?.tirada === 'simple' ||
+        packDef?.tirada === 'completa'
+      ) && (session.cartasLanzadas || []).length === 0;
 
       if (!session.lunaRecopiloData) {
         // Fallback: Luna entró sin datos recopilados (sesión antigua o edge case).
@@ -956,7 +962,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         session.agregadoContexto = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
           ? mensajeTexto : '';
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
-        const cantidadCartas = session.servicio?.includes('completa') ? 7 : 3;
+        const cantidadCartas = (session.servicio?.includes('completa') || packDef?.tirada === 'completa') ? 7 : 3;
 
         session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
         session.cartasEnviadas = true;
@@ -1044,7 +1050,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         const consultaEfectivaDirecto = session.historialConsulta && session.historialConsulta.trim().length > 2
           ? `"${session.historialConsulta}"`
           : 'una consulta general (no especificó tema — leé la energía general y pedíle que te cuente qué la trajo)';
-        const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
+        const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral') || packDef?.carta_astral === true;
         const instruccionDirecta = esCartaAstral
           ? `Realizá la Carta Astral Completa de ${datosClienteDirecto}. Seguí la estructura ESTRUCTURA DE LA CARTA ASTRAL del prompt. Calculá con precisión el signo solar, número de vida y año personal. Mínimo 12 mensajes con |||. Sin emojis.`
           : `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`;

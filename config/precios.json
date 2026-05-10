@@ -69,27 +69,32 @@
     "pack_claridad": {
       "nombre": "Pack Claridad",
       "incluye": "Tirada completa + 5 preguntas",
-      "precio": 18000
+      "precio": 18000,
+      "tirada": "completa"
     },
     "pack_amor_total": {
       "nombre": "Pack Amor Total",
       "incluye": "Tirada amor + Protección amor + Corte de lazos + 5 preguntas",
-      "precio": 28000
+      "precio": 28000,
+      "tirada": "simple"
     },
     "pack_exito": {
       "nombre": "Pack Éxito",
       "incluye": "Tirada trabajo + Protección económica + 10 preguntas",
-      "precio": 30000
+      "precio": 30000,
+      "tirada": "simple"
     },
     "pack_transformacion": {
       "nombre": "Pack Transformación",
       "incluye": "Carta Astral + Desbloqueo de caminos",
-      "precio": 35000
+      "precio": 35000,
+      "carta_astral": true
     },
     "pack_completo": {
       "nombre": "Pack Completo",
       "incluye": "Carta Astral + Tirada completa + Protección a elección + 10 preguntas",
-      "precio": 50000
+      "precio": 50000,
+      "tirada": "completa"
     }
   },
   "tolerancia_pago": 500
