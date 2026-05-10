@@ -349,7 +349,13 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     ? `El cliente escribió "${mensajeClienteMientrasEsperaba}" mientras esperaba. ${base}`
     : base;
 
-  const mensajeLuna = await chat(prompt, [], instruccion);
+  let mensajeLuna;
+  try {
+    mensajeLuna = await chat(prompt, [], instruccion);
+  } catch (err) {
+    console.error('Error en iniciarLuna:', err.message);
+    mensajeLuna = 'perdón, estoy teniendo problemas en este momento. escribime de nuevo en un ratito 🌙';
+  }
   session.historialChat.push({ role: 'assistant', content: mensajeLuna });
   await saveSession(numero, session);
   await enviarMensajesMultiples(numero, mensajeLuna);
@@ -419,7 +425,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     // ── Bienvenida ───────────────────────────────────────────────────────────
     case 'bienvenida': {
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, true);
-      respuesta = await chat(prompt, [], mensajeTexto);
+      try {
+        respuesta = await chat(prompt, [], mensajeTexto);
+      } catch (err) {
+        console.error('Error en bienvenida:', err.message);
+        respuesta = 'hola, bienvenida al estudio de tarot luna ✨ ¿en qué te puedo ayudar?';
+      }
       session.etapa = 'esperando_eleccion';
       break;
     }
@@ -430,7 +441,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       const pidieronMenu = await detectarPeticionMenu(mensajeTexto);
       if (pidieronMenu) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        try {
+          respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        } catch (err) {
+          console.error('Error en esperando_eleccion (menu):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
         break;
       }
 
@@ -446,20 +462,30 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         session.etapa = 'confirmando_eleccion';
 
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta mencionó "${servicioElegido.nombre}" ($${servicioElegido.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
-        );
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta mencionó "${servicioElegido.nombre}" ($${servicioElegido.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
+          );
+        } catch (err) {
+          console.error('Error en esperando_eleccion (servicioElegido):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
         break;
       } else if (servicioElegido && esPreguntaPrecio) {
         // Solo preguntó el precio — responder sin avanzar en el funnel
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta preguntó el precio de "${servicioElegido.nombre}". Respondé el precio ($${servicioElegido.precio?.toLocaleString('es-AR')}) de forma natural y preguntale si le interesa. No avances al pago todavía.`
-        );
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta preguntó el precio de "${servicioElegido.nombre}". Respondé el precio ($${servicioElegido.precio?.toLocaleString('es-AR')}) de forma natural y preguntale si le interesa. No avances al pago todavía.`
+          );
+        } catch (err) {
+          console.error('Error en esperando_eleccion (pregunta precio):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
         break;
       }
 
@@ -477,11 +503,16 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
             session.etapa = 'confirmando_eleccion';
             await saveSession(numero, session);
             const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false, true);
-            respuesta = await chat(
-              prompt,
-              session.historialChat.slice(0, -1),
-              `La clienta eligió "${servicioElegidoPorOrdinal.nombre}" ($${servicioElegidoPorOrdinal.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
-            );
+            try {
+              respuesta = await chat(
+                prompt,
+                session.historialChat.slice(0, -1),
+                `La clienta eligió "${servicioElegidoPorOrdinal.nombre}" ($${servicioElegidoPorOrdinal.precio?.toLocaleString('es-AR')}). Confirmá en 1 oración corta qué incluye y preguntale si lo quiere reservar. PROHIBIDO: mandar el alias, mandar el monto, pedir nombre, pedir contexto.`
+              );
+            } catch (err) {
+              console.error('Error en esperando_eleccion (ordinal):', err.message);
+              respuesta = 'perdón, ¿podés repetirme eso?';
+            }
             break;
           }
         }
@@ -491,7 +522,12 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
       const esMensajeConversacional = await detectarMensajeConversacional(mensajeTexto);
       if (esMensajeConversacional) {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        try {
+          respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        } catch (err) {
+          console.error('Error en esperando_eleccion (conversacional):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
         break;
       }
 
@@ -506,14 +542,24 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         ).join('\n');
 
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta describió: "${mensajeTexto}". Sugeríle estas opciones explicando brevemente por qué le vendrían bien:\n${descripcionServicios}\nTerminá con una pregunta corta: cuál le resuena más o si quiere combinar. PROHIBIDO ABSOLUTAMENTE: confirmar que eligió, mencionar alias, pedir pago, preguntar nombre, preguntar por Luna.`
-        );
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta describió: "${mensajeTexto}". Sugeríle estas opciones explicando brevemente por qué le vendrían bien:\n${descripcionServicios}\nTerminá con una pregunta corta: cuál le resuena más o si quiere combinar. PROHIBIDO ABSOLUTAMENTE: confirmar que eligió, mencionar alias, pedir pago, preguntar nombre, preguntar por Luna.`
+          );
+        } catch (err) {
+          console.error('Error en esperando_eleccion (sugeridos):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
       } else {
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        try {
+          respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        } catch (err) {
+          console.error('Error en esperando_eleccion (else):', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
       }
       break;
     }
@@ -563,10 +609,11 @@ async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
         const sugeridosActuales = session.serviciosSugeridos || sugeridos;
         const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
         const nombresYPrecios = sugeridosActuales.map(s => `${s.nombre} ($${s.precio?.toLocaleString('es-AR')})`).join(', ');
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}.
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta dice: "${mensajeTexto}". Le habías preguntado si quiere reservar: ${nombresYPrecios}.
 
 Respondé naturalmente pero SIEMPRE terminá volviendo a la pregunta de confirmación del servicio.
 
@@ -575,7 +622,11 @@ Si pregunta por precio/detalle del servicio: respondé brevemente y volvé a la 
 Si expresa dudas: ayudala a decidir y terminá preguntando si lo confirma.
 
 PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, o cualquier dato personal. NUNCA decir que Luna está disponible, que ya avisó, o que Luna va a escribir. NUNCA avanzar el flujo sin confirmación explícita.`
-        );
+          );
+        } catch (err) {
+          console.error('Error en confirmando_eleccion:', err.message);
+          respuesta = 'perdón, ¿podés repetirme eso?';
+        }
       }
       break;
     }
@@ -633,20 +684,31 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
           session.servicio = servicioNuevo.key;
           session.precioServicio = servicioNuevo.precio;
           const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-          const confirmacion = await chat(
-            prompt,
-            session.historialChat.slice(0, -1),
-            `La clienta quiere cambiar a: "${servicioNuevo.nombre || servicioNuevo.key}". Confirmalo brevemente. No preguntes el nombre. No menciones precio ni alias — el sistema los manda después.`
-          );
+          let confirmacion;
+          try {
+            confirmacion = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `La clienta quiere cambiar a: "${servicioNuevo.nombre || servicioNuevo.key}". Confirmalo brevemente. No preguntes el nombre. No menciones precio ni alias — el sistema los manda después.`
+            );
+          } catch (err) {
+            console.error('Error en esperando_comprobante (cambio servicio):', err.message);
+            confirmacion = 'perfecto, tomamos ese servicio';
+          }
           const datosPago = `*Titular:* ${CUENTA.titular}|||*Alias:* ${CUENTA.alias}|||*Monto exacto:* $${servicioNuevo.precio?.toLocaleString('es-AR')}|||mandame la captura cuando hagas la transferencia ✨`;
           respuesta = `${confirmacion}|||${datosPago}`;
         } else {
           const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-          respuesta = await chat(
-            prompt,
-            session.historialChat.slice(0, -1),
-            `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente — si avisa que ya lo manda, decile que lo aguardás. No repitas las instrucciones de pago.`
-          );
+          try {
+            respuesta = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `El cliente dice: "${mensajeTexto}". Estás esperando que mande una captura de pantalla del comprobante de pago. Respondé naturalmente — si avisa que ya lo manda, decile que lo aguardás. No repitas las instrucciones de pago.`
+            );
+          } catch (err) {
+            console.error('Error en esperando_comprobante (else):', err.message);
+            respuesta = 'cuando hagas la transferencia mandame la captura del comprobante ✨';
+          }
         }
       }
       break;
@@ -725,11 +787,16 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         ? 'fecha de nacimiento (día, mes y año) — si tiene también la hora y la ciudad donde nació, que la agregue'
         : 'fecha de nacimiento (día, mes y año)';
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-      respuesta = await chat(
-        prompt,
-        session.historialChat.slice(0, -1),
-        `La clienta acaba de decir que se llama ${session.nombre} (nombre completo: ${session.nombreCompleto}). Confirmá el nombre de forma cálida y natural en una frase corta — si antes contó algo personal (una situación, un problema), referencialo brevemente. Luego pedíle su ${pedidoFecha}. Máximo 2 oraciones. Sin emoji forzado.`
-      );
+      try {
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta acaba de decir que se llama ${session.nombre} (nombre completo: ${session.nombreCompleto}). Confirmá el nombre de forma cálida y natural en una frase corta — si antes contó algo personal (una situación, un problema), referencialo brevemente. Luego pedíle su ${pedidoFecha}. Máximo 2 oraciones. Sin emoji forzado.`
+        );
+      } catch (err) {
+        console.error('Error en pidiendo_nombre:', err.message);
+        respuesta = `perdón, tuve un problema. ¿me repetís tu fecha de nacimiento?`;
+      }
       break;
     }
 
@@ -738,11 +805,16 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       session.fechaNacimiento = mensajeTexto.trim();
       session.etapa = 'pidiendo_contexto';
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-      respuesta = await chat(
-        prompt,
-        session.historialChat.slice(0, -1),
-        `La clienta acaba de dar su fecha de nacimiento (${session.fechaNacimiento}). Confirmá brevemente que la anotaste y preguntale si hay algo puntual que quiera que le cuente a luna antes de arrancar — si antes mencionó su situación, referenciarla al preguntar ("para lo que me contabas de..."). Máximo 2 oraciones. Sin emoji forzado.`
-      );
+      try {
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `La clienta acaba de dar su fecha de nacimiento (${session.fechaNacimiento}). Confirmá brevemente que la anotaste y preguntale si hay algo puntual que quiera que le cuente a luna antes de arrancar — si antes mencionó su situación, referenciarla al preguntar ("para lo que me contabas de..."). Máximo 2 oraciones. Sin emoji forzado.`
+        );
+      } catch (err) {
+        console.error('Error en pidiendo_fecha:', err.message);
+        respuesta = `perdón, tuve un problema. ¿hay algo puntual que quieras que le cuente a luna?`;
+      }
       break;
     }
 
@@ -768,11 +840,16 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
     // ── Esperando que Luna entre ─────────────────────────────────────────────
     case 'esperando_luna': {
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-      respuesta = await chat(
-        prompt,
-        session.historialChat.slice(0, -1),
-        `El cliente dice: "${mensajeTexto}". Luna todavía no entró. Respondé naturalmente y siempre terminá diciéndole que en un momento le escriba de nuevo para conectarla ("en un ratito escribime y te la paso", "ya falta poco, escribime en un momento"). Nunca digas que Luna va a escribir sola — el cliente tiene que mandar un mensaje para conectarse.`
-      );
+      try {
+        respuesta = await chat(
+          prompt,
+          session.historialChat.slice(0, -1),
+          `El cliente dice: "${mensajeTexto}". Luna todavía no entró. Respondé naturalmente y siempre terminá diciéndole que en un momento le escriba de nuevo para conectarla ("en un ratito escribime y te la paso", "ya falta poco, escribime en un momento"). Nunca digas que Luna va a escribir sola — el cliente tiene que mandar un mensaje para conectarse.`
+        );
+      } catch (err) {
+        console.error('Error en esperando_luna:', err.message);
+        respuesta = 'perdón, estoy teniendo problemas. escribime de nuevo en un momento 🌙';
+      }
       break;
     }
 
@@ -851,21 +928,31 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         });
         if (tieneDatos) {
           const datosTexto = `${nombreMostrar}, nacida/o el ${session.fechaNacimiento}`;
-          respuesta = await chat(
-            prompt,
-            session.historialChat.slice(0, -1),
-            `La clienta dijo: "${mensajeTexto}". Corroborá sus datos de forma cálida: "${datosTexto}". Preguntá si quiere agregar algo antes de arrancar. Sin emojis.`
-          );
+          try {
+            respuesta = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `La clienta dijo: "${mensajeTexto}". Corroborá sus datos de forma cálida: "${datosTexto}". Preguntá si quiere agregar algo antes de arrancar. Sin emojis.`
+            );
+          } catch (err) {
+            console.error('Error en con_luna (fallback tieneDatos):', err.message);
+            respuesta = 'perdón, estoy teniendo problemas. escribime de nuevo en un momento';
+          }
         } else {
           const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral');
           const pedidoDatos = esCartaAstral
             ? 'nombre completo, fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
             : 'nombre completo y fecha de nacimiento (día, mes y año)';
-          respuesta = await chat(
-            prompt,
-            session.historialChat.slice(0, -1),
-            `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional. Sin emojis.`
-          );
+          try {
+            respuesta = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `La clienta dijo: "${mensajeTexto}". Pedíle su ${pedidoDatos} de forma conversacional. Sin emojis.`
+            );
+          } catch (err) {
+            console.error('Error en con_luna (fallback !tieneDatos):', err.message);
+            respuesta = 'perdón, estoy teniendo problemas. escribime de nuevo en un momento';
+          }
         }
       } else if (necesitaCartas && !session.cartasEnviadas) {
         // PASO 1: tirar cartas y mandarlas. La lectura se genera en el próximo mensaje.
@@ -946,7 +1033,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         }
       } else if (!session.datosBiograficos) {
         // Tiene datos, servicio sin tirada → lectura/servicio directo
-        session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
+        const datosBiograficosTemp = session.fechaNacimiento || mensajeTexto;
         const agregadoDirecto = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
           ? ` También agregó: "${mensajeTexto}".` : '';
         const prompt = getLunaPrompt({
@@ -961,12 +1048,20 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         const consultaEfectivaDirecto = session.historialConsulta && session.historialConsulta.trim().length > 2
           ? `"${session.historialConsulta}"`
           : 'una consulta general (no especificó tema — leé la energía general y pedíle que te cuente qué la trajo)';
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
-        );
-        session.etapa = 'upsell';
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
+          );
+          // Solo marcamos como leído si la lectura se generó exitosamente
+          session.datosBiograficos = datosBiograficosTemp;
+          session.etapa = 'upsell';
+        } catch (err) {
+          console.error('Error en con_luna (PATH 2 lectura directa):', err.message);
+          respuesta = 'dame un momento, tengo algo en la energía que necesito terminar de leer. escribime de nuevo en un ratito';
+          // No guardamos datosBiograficos → el próximo mensaje reintenta la lectura
+        }
       } else {
         // Conversación en curso con Luna
         const prompt = getLunaPrompt({
@@ -977,7 +1072,12 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
           historialSofia: buildResumenSofia(session.historialChat),
           contextoDadoPorCliente: session.contextoPorCliente
         });
-        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        try {
+          respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+        } catch (err) {
+          console.error('Error en con_luna (conversación en curso):', err.message);
+          respuesta = 'dame un momento, necesito terminar de leer esto. escribime de nuevo en un ratito';
+        }
       }
       break;
     }
@@ -998,11 +1098,16 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
             historialSofia: buildResumenSofia(session.historialChat),
             contextoDadoPorCliente: session.contextoPorCliente
           });
-          respuesta = await chat(
-            prompt,
-            session.historialChat.slice(0, -1),
-            `La clienta tiene 0 preguntas disponibles en su pack. No respondas la consulta nueva. Decíle de forma cálida y directa que se le terminaron las preguntas del pack, y sugerile que sume más preguntas o algún servicio complementario. Sin emojis.`
-          );
+          try {
+            respuesta = await chat(
+              prompt,
+              session.historialChat.slice(0, -1),
+              `La clienta tiene 0 preguntas disponibles en su pack. No respondas la consulta nueva. Decíle de forma cálida y directa que se le terminaron las preguntas del pack, y sugerile que sume más preguntas o algún servicio complementario. Sin emojis.`
+            );
+          } catch (err) {
+            console.error('Error en upsell (preguntas agotadas):', err.message);
+            respuesta = 'dame un momento, necesito terminar de leer esto. escribime de nuevo en un ratito';
+          }
           break;
         }
         // Tiene preguntas disponibles — decrementar y continuar
@@ -1019,14 +1124,24 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         historialSofia: buildResumenSofia(session.historialChat),
         contextoDadoPorCliente: session.contextoPorCliente
       });
-      respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+      try {
+        respuesta = await chat(prompt, session.historialChat.slice(0, -1), mensajeTexto);
+      } catch (err) {
+        console.error('Error en upsell:', err.message);
+        respuesta = 'dame un momento, necesito terminar de leer esto. escribime de nuevo en un ratito';
+      }
       break;
     }
 
     default: {
       session.etapa = 'bienvenida';
       const prompt = getSofiaPrompt(false, null, true);
-      respuesta = await chat(prompt, [], mensajeTexto);
+      try {
+        respuesta = await chat(prompt, [], mensajeTexto);
+      } catch (err) {
+        console.error('Error en default:', err.message);
+        respuesta = 'hola, bienvenida al estudio de tarot luna ✨ ¿en qué te puedo ayudar?';
+      }
     }
   }
 
