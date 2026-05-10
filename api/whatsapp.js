@@ -646,10 +646,8 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         if (validacion.valido) {
           session.montosPagados.push(session.precioServicio);
           // Si el servicio es un pack de preguntas, inicializar el contador en Redis
-          const esPackAuto = precios.packs_preguntas[session.servicio];
-          if (esPackAuto) {
-            await setPreguntasRestantes(numero, esPackAuto.preguntas);
-          }
+          const esPackAuto = session.serviciosSeleccionados?.find(s => precios.packs_preguntas[s.key]);
+          if (esPackAuto) await setPreguntasRestantes(numero, precios.packs_preguntas[esPackAuto.key].preguntas);
           await new Promise(r => setTimeout(r, 800));
           await enviarMensaje(numero, `todo perfecto, pago verificado 🌙`);
           await new Promise(r => setTimeout(r, 1000));
@@ -658,7 +656,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
             respuesta = `¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
           } else if (session.nombre) {
             session.etapa = 'pidiendo_fecha';
-            const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral');
+            const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
             respuesta = esCartaAstral
               ? `¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
               : `¿y tu fecha de nacimiento? (día, mes y año)`;
@@ -731,10 +729,8 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
           }
           sc.montosPagados.push(sc.precioServicio);
           // Si el servicio es un pack de preguntas, inicializar el contador en Redis
-          const esPackAdmin = precios.packs_preguntas[sc.servicio];
-          if (esPackAdmin) {
-            await setPreguntasRestantes(clienteNum, esPackAdmin.preguntas);
-          }
+          const esPackAdmin = sc.serviciosSeleccionados?.find(s => precios.packs_preguntas[s.key]);
+          if (esPackAdmin) await setPreguntasRestantes(clienteNum, precios.packs_preguntas[esPackAdmin.key].preguntas);
           const confirmaciones = ['listo, pago recibido', 'perfecto, ya está confirmado', 'todo bien con el pago'];
           const conf = confirmaciones[Math.floor(Math.random() * confirmaciones.length)];
           if (sc.nombre && sc.fechaNacimiento) {
@@ -744,7 +740,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
           } else if (sc.nombre) {
             sc.etapa = 'pidiendo_fecha';
             await saveSession(clienteNum, sc);
-            const esCartaAstral = (sc.servicio || '').toLowerCase().includes('carta_astral');
+            const esCartaAstral = sc.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
             const msgFecha = esCartaAstral
               ? `${conf} ✨|||¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
               : `${conf}|||¿y tu fecha de nacimiento? (día, mes y año)`;
@@ -782,7 +778,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       session.nombreCompleto = mensajeTexto.trim();
       session.nombre = mensajeTexto.trim().split(' ')[0]; // primer nombre para referencias de Sofía
       session.etapa = 'pidiendo_fecha';
-      const esCartaAstralNombre = (session.servicio || '').toLowerCase().includes('carta_astral');
+      const esCartaAstralNombre = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
       const pedidoFecha = esCartaAstralNombre
         ? 'fecha de nacimiento (día, mes y año) — si tiene también la hora y la ciudad donde nació, que la agregue'
         : 'fecha de nacimiento (día, mes y año)';
@@ -864,7 +860,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       }
 
       // ── Pregunta puntual: 1 carta + respuesta directa en un solo burst ──────────
-      if (session.servicio === 'pregunta_puntual' && !session.cartasEnviadas) {
+      if (session.serviciosSeleccionados?.some(s => s.key === 'pregunta_puntual') && !session.cartasEnviadas) {
         session.datosBiograficos = session.fechaNacimiento || mensajeTexto;
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
         session.cartasLanzadas = tirarCartas(1, tema);
@@ -939,7 +935,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
             respuesta = 'perdón, estoy teniendo problemas. escribime de nuevo en un momento';
           }
         } else {
-          const esCartaAstral = (session.servicio || '').toLowerCase().includes('carta_astral');
+          const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
           const pedidoDatos = esCartaAstral
             ? 'nombre completo, fecha de nacimiento (día, mes, año), hora si la tenés, y ciudad donde naciste'
             : 'nombre completo y fecha de nacimiento (día, mes y año)';
@@ -1085,7 +1081,7 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
     // ── Upsell post-consulta ─────────────────────────────────────────────────
     case 'upsell': {
       // Si tiene pack de preguntas, verificar si quedan preguntas disponibles
-      const esPaquete = precios.packs_preguntas[session.servicio];
+      const esPaquete = session.serviciosSeleccionados?.find(s => precios.packs_preguntas[s.key]);
       if (esPaquete) {
         const restantes = await getPreguntasRestantes(numero);
         if (restantes !== null && restantes <= 0) {
