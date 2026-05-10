@@ -1044,11 +1044,15 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         const consultaEfectivaDirecto = session.historialConsulta && session.historialConsulta.trim().length > 2
           ? `"${session.historialConsulta}"`
           : 'una consulta general (no especificó tema — leé la energía general y pedíle que te cuente qué la trajo)';
+        const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
+        const instruccionDirecta = esCartaAstral
+          ? `Realizá la Carta Astral Completa de ${datosClienteDirecto}. Seguí la estructura ESTRUCTURA DE LA CARTA ASTRAL del prompt. Calculá con precisión el signo solar, número de vida y año personal. Mínimo 12 mensajes con |||. Sin emojis.`
+          : `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`;
         try {
           respuesta = await chat(
             prompt,
             session.historialChat.slice(0, -1),
-            `Consulta de ${datosClienteDirecto}. Quiere saber sobre: ${consultaEfectivaDirecto}.${agregadoDirecto} Realizá el servicio contratado (${session.servicio}) usando los datos para personalizar. Estructura: apertura (energía general) → cuerpo (lo que estás trabajando) → síntesis (la frase que se llevan) → acción concreta. Mínimo 4 mensajes separados con |||. Sin emojis.`
+            instruccionDirecta
           );
           // Solo marcamos como leído si la lectura se generó exitosamente
           session.datosBiograficos = datosBiograficosTemp;
