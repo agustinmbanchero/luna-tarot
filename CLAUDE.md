@@ -83,8 +83,10 @@ confirmando_eleccion
 esperando_comprobante
   → Usuario manda imagen/documento del comprobante
   → Claude (sonnet) analiza la imagen y verifica el monto
+  → Si llega un PDF: NO se manda a Claude Vision (no lo lee) — se pide una captura de pantalla y se sigue esperando
   → Si válido: avanza a pidiendo_nombre. Si el servicio es pack_preguntas, inicializa contador Redis.
   → Si inválido: notifica al admin por WhatsApp, etapa: verificando_pago
+  → Si la clienta cambia de servicio acá (texto): se actualiza serviciosSeleccionados + servicio (display) + precio
   → Stickers/audios/video: responden con aviso ("no puedo leer audios...") en lugar de ignorar
 
 verificando_pago
@@ -113,9 +115,14 @@ esperando_luna
   → Sofía mantiene al cliente mientras espera con mensajes naturales
   → El cron job (api/cron.js) revisa periódicamente y dispara iniciarLuna()
   → También se dispara si el cliente escribe y ya pasó el delay
+  → Guard anti-doble-disparo: `session.lunaIniciando` (+ `lunaIniciandoEn`, TTL 90s) evita que
+    webhook y cron presenten a Luna dos veces si caen en paralelo. Se setea ANTES del chat y se
+    libera después (o al expirar el TTL, para no trabar a Luna si hubo timeout).
 
 con_luna — TRES PATHS según servicio
-  PATH 0 — pregunta_puntual (servicio === 'pregunta_puntual', !cartasEnviadas):
+  Detección de path por KEY, no por nombre: se usa session.serviciosSeleccionados[].key
+  (ej: 'pregunta_puntual', 'carta_astral', packs). session.servicio guarda el nombre display.
+  PATH 0 — pregunta_puntual (serviciosSeleccionados incluye key 'pregunta_puntual', !cartasEnviadas):
     → Tira 1 carta, envía imagen, genera lectura directa en el MISMO burst (sin PASO 1/PASO 2)
     → Máx 2-3 mensajes con |||. Respuesta concreta, sin apertura larga.
     → Si Claude falla: sesión no se toca → reintento posible
@@ -137,19 +144,22 @@ con_luna — TRES PATHS según servicio
 
   PATH 2 — servicios sin tirada (desbloqueo, corte de lazos, protección, carta_astral):
     → Luna lee directamente, sin cartas. Mínimo 4 mensajes con |||.
+    → Excepción carta_astral: lectura astrológica estructurada de mínimo 12 mensajes
+      (signo solar, luna, ascendente si hay hora, casas según el contexto, nodo norte,
+      número de vida, año personal, patrón, mensaje del momento, acción, cierre+upsell).
     → etapa: upsell
 
 upsell
   → Si es pack_preguntas: verifica contador Redis antes de responder
     - restantes <= 0: Luna ofrece recarga sin responder la consulta nueva
     - restantes > 0: decrementa y responde normalmente
-    - Redis no disponible: responde sin bloquear
+    - Redis no disponible (restantes === null): responde sin bloquear + console.warn de trazabilidad
   → Luna continúa respondiendo y ofrece servicios adicionales de forma orgánica
 ```
 
 **Reset de sesión**:
 - `reset` reinicia desde cualquier etapa.
-- Saludos simples ("hola", "buenas") reinician desde etapas de pago trabadas (`esperando_comprobante`, `verificando_pago`).
+- Saludos simples ("hola", "buenas") reinician SOLO desde `esperando_comprobante` (clienta trabada sin haber mandado nada). **NO** resetea en `verificando_pago` — ahí la clienta ya mandó comprobante y está en revisión del admin; un saludo no debe borrarle el pago.
 - Saludos después de 12h de inactividad reinician desde etapas avanzadas (`con_luna`, `upsell`, `esperando_luna`, `pidiendo_contexto`).
 
 ## Datos del cliente en sesión
@@ -162,6 +172,8 @@ session.contextoPorCliente  // lo que el cliente quiere consultar (guardado en p
 session.historialConsulta   // = contextoPorCliente || primer mensaje en con_luna (si trivial → vacío)
 session.datosBiograficos    // = 'leido' cuando la lectura ya fue entregada exitosamente
 session.lunaRecopiloData    // true cuando Luna ya entró y corroboró datos
+session.lunaIniciando       // guard: true mientras webhook/cron está disparando la entrada de Luna
+session.lunaIniciandoEn     // timestamp del guard (TTL 90s para no trabar a Luna si hay timeout)
 session.cartasLanzadas      // array de IDs de cartas tiradas (ej: ['el_loco', '3_copas', ...])
 session.cartasEnviadas      // true una vez que las imágenes fueron enviadas
 session.agregadoContexto    // texto extra que la clienta agregó al confirmar el arranque
@@ -315,7 +327,8 @@ Tolerancia de pago: $500.
 
 ## Problemas conocidos pendientes
 
-- **Race condition**: dos mensajes rápidos del mismo número disparan dos Vercel functions en paralelo que leen la misma sesión de Redis simultáneamente. El segundo puede pisar el estado del primero. Solución: Redis lock (SET NX + TTL). No crítico a bajo volumen — atacar cuando escale.
+- **Race condition general**: dos mensajes rápidos del mismo número disparan dos Vercel functions en paralelo que leen la misma sesión de Redis simultáneamente. El segundo puede pisar el estado del primero. Solución definitiva: Redis lock (SET NX + TTL). No crítico a bajo volumen — atacar cuando escale.
+  - **Mitigado para la entrada de Luna**: el guard `lunaIniciando` (+ `lunaIniciandoEn`, TTL 90s) evita el caso puntual de que webhook y cron presenten a Luna dos veces. No es un lock real (sigue habiendo ventana TOCTOU mínima), pero alcanza a bajo volumen.
 
 ## Principio de diseño clave
 
