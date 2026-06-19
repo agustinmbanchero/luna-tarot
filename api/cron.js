@@ -68,7 +68,14 @@ module.exports = async function handler(req, res) {
         if (session.etapa !== 'esperando_luna') continue;
         if (!session.lunaDebeEscribirEn || Date.now() < session.lunaDebeEscribirEn) continue;
 
-        // Iniciar Luna — NO guardar sesión antes de chat() para evitar estado corrupto si hay timeout
+        // Guard anti-doble-disparo: si el webhook (u otra corrida del cron) ya está iniciando
+        // a Luna (flag de hace menos de 90s), saltar. El TTL evita trabarla si hubo timeout.
+        const ahora = Date.now();
+        if (session.lunaIniciando && session.lunaIniciandoEn && (ahora - session.lunaIniciandoEn) < 90000) continue;
+        session.lunaIniciando = true;
+        session.lunaIniciandoEn = ahora;
+        await saveSession(numero, session); // persistir el flag ANTES del chat
+
         const nombreMostrar = session.nombreCompleto || session.nombre || '';
         const datosTexto = [
           nombreMostrar,
@@ -96,12 +103,18 @@ module.exports = async function handler(req, res) {
         // Solo marcar como iniciado si chat() tuvo éxito
         session.etapa = 'con_luna';
         session.lunaRecopiloData = true;
+        session.lunaIniciando = false; // liberar el guard
         session.historialChat.push({ role: 'assistant', content: mensajeLuna });
         await saveSession(numero, session);
         await enviarMensajesMultiples(numero, mensajeLuna);
         procesados++;
       } catch (err) {
         console.error('Error procesando sesión', numero, err.message);
+        // Liberar el guard para permitir reintento si chat() falló
+        try {
+          const s = await getSession(numero);
+          if (s.lunaIniciando) { s.lunaIniciando = false; await saveSession(numero, s); }
+        } catch (e) { /* noop */ }
       }
     }
 

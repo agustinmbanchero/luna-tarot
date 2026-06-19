@@ -279,6 +279,13 @@ async function validarComprobante(mediaUrl, montoEsperado) {
     });
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
+
+    // Claude Vision no puede leer un PDF como imagen. Si llega un PDF (o el link
+    // termina en .pdf), no lo mandamos a Claude — pedimos una captura de pantalla.
+    if (contentType.includes('pdf') || /\.pdf(\?|$)/i.test(mediaUrl)) {
+      return { valido: false, esPdf: true, motivo: 'comprobante en PDF' };
+    }
+
     const buffer = await response.arrayBuffer();
     const base64 = Buffer.from(buffer).toString('base64');
 
@@ -319,6 +326,15 @@ Si el monto está dentro del rango → valido: true`
 // ── Iniciar consulta de Luna ──────────────────────────────────────────────────
 
 async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = null) {
+  // Guard anti-doble-disparo: webhook y cron pueden caer en paralelo. Si otro proceso ya
+  // está iniciando a Luna (flag puesto hace menos de 90s), salimos. El TTL evita que un
+  // timeout deje a Luna trabada para siempre.
+  const ahora = Date.now();
+  if (session.lunaIniciando && session.lunaIniciandoEn && (ahora - session.lunaIniciandoEn) < 90000) return;
+  session.lunaIniciando = true;
+  session.lunaIniciandoEn = ahora;
+  await saveSession(numero, session); // persistir el flag ANTES del chat para que el proceso paralelo lo vea
+
   session.etapa = 'con_luna';
   // Luna pide datos en su primer mensaje → cuando el cliente responda se hace la lectura directamente
   session.lunaRecopiloData = true;
@@ -356,6 +372,7 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
     console.error('Error en iniciarLuna:', err.message);
     mensajeLuna = 'perdón, estoy teniendo problemas en este momento. escribime de nuevo en un ratito 🌙';
   }
+  session.lunaIniciando = false; // liberar el guard
   session.historialChat.push({ role: 'assistant', content: mensajeLuna });
   await saveSession(numero, session);
   await enviarMensajesMultiples(numero, mensajeLuna);
@@ -366,8 +383,10 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
 async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   let session = await getSession(numero);
 
-  // Reiniciar sesión solo si está trabado en pago (no cuando Luna ya está atendiendo)
-  const etapasReiniciables = ['esperando_comprobante', 'verificando_pago'];
+  // Reiniciar sesión solo si está trabado en pago (no cuando Luna ya está atendiendo).
+  // NO incluye 'verificando_pago': ahí la clienta ya mandó comprobante y está en revisión
+  // del admin — un saludo no debe borrarle el pago.
+  const etapasReiniciables = ['esperando_comprobante'];
   const saludos = ['hola', 'buenas', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hi', 'inicio', 'empezar'];
   const textoLimpio = mensajeTexto?.toLowerCase().trim().replace(/[^a-záéíóúñü\s]/g, '') || '';
 
@@ -664,6 +683,10 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
             session.etapa = 'pidiendo_nombre';
             respuesta = `¿me pasás tu nombre completo para avisarle a luna?`;
           }
+        } else if (validacion.esPdf) {
+          // PDF: no se puede leer como imagen. Pedimos captura y seguimos esperando (sin avisar al admin).
+          await new Promise(r => setTimeout(r, 800));
+          respuesta = `me llegó como archivo PDF y por acá no lo puedo abrir bien 🙏 ¿me mandás una captura de pantalla del comprobante? (una foto de la pantalla)`;
         } else {
           try {
             await enviarMensaje(
@@ -679,7 +702,10 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       } else {
         const servicioNuevo = await detectarServicioConIA(mensajeTexto);
         if (servicioNuevo) {
-          session.servicio = servicioNuevo.key;
+          // Actualizar serviciosSeleccionados también: de ahí dependen todas las
+          // detecciones de path en con_luna (pregunta_puntual, carta_astral, packs, contador).
+          session.serviciosSeleccionados = [servicioNuevo];
+          session.servicio = servicioNuevo.nombre; // display name, consistente con confirmando_eleccion
           session.precioServicio = servicioNuevo.precio;
           const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
           let confirmacion;
@@ -1094,6 +1120,11 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       const esPaquete = session.serviciosSeleccionados?.find(s => precios.packs_preguntas[s.key]);
       if (esPaquete) {
         const restantes = await getPreguntasRestantes(numero);
+        if (restantes === null) {
+          // Redis no disponible — no bloqueamos a una clienta que pagó por un fallo de infra,
+          // pero lo dejamos trazado para detectar el problema.
+          console.warn(`getPreguntasRestantes devolvió null para ${numero} con pack activo — contador no verificado (Redis?)`);
+        }
         if (restantes !== null && restantes <= 0) {
           // Se acabaron las preguntas — ofrecer recarga sin que Luna responda la consulta
           const prompt = getLunaPrompt({
