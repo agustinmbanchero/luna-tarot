@@ -47,7 +47,8 @@ config/
   precios.json       — Servicios, packs y tolerancia_pago
 lib/
   session-store.js   — getSession(), saveSession(), deleteSession(), getPreguntasRestantes(),
-                       setPreguntasRestantes(), decrementarPregunta() con Redis/Map
+                       setPreguntasRestantes(), decrementarPregunta(), marcarMensajeProcesado()
+                       (dedup), adquirirLock()/liberarLock() (lock por número) — con Redis/Map
   anthropic.js       — chat(systemPrompt, historial, mensajeUsuario, maxTokens?) con claude-sonnet-4-6
 public/
   cartas/            — 78 imágenes JPG del mazo Rider-Waite (servidas vía GitHub raw CDN)
@@ -84,39 +85,35 @@ esperando_comprobante
   → Usuario manda imagen/documento del comprobante
   → Claude (sonnet) analiza la imagen y verifica el monto
   → Si llega un PDF: NO se manda a Claude Vision (no lo lee) — se pide una captura de pantalla y se sigue esperando
-  → Si válido: avanza a pidiendo_nombre. Si el servicio es pack_preguntas, inicializa contador Redis.
+  → Si válido: avanza a pidiendo_datos (o a pidiendo_contexto si ya tiene nombre+fecha). Si el servicio es pack_preguntas, inicializa contador Redis.
   → Si inválido: notifica al admin por WhatsApp, etapa: verificando_pago
   → Si la clienta cambia de servicio acá (texto): se actualiza serviciosSeleccionados + servicio (display) + precio
   → Stickers/audios/video: responden con aviso ("no puedo leer audios...") en lugar de ignorar
 
 verificando_pago
   → Admin responde "APROBAR <numero>" o "RECHAZAR <numero>"
-  → Si aprueba: avanza al paso que corresponda según datos ya guardados.
+  → Si aprueba: avanza a pidiendo_datos (o pidiendo_contexto si ya tiene datos).
                 Si es pack_preguntas, inicializa contador Redis.
   → Validaciones: número requerido, sesión debe estar en verificando_pago
 
-pidiendo_nombre
-  → Sofía pasa por Claude (con historialChat) para confirmar el nombre con calidez y contexto
-  → Se guarda session.nombreCompleto y session.nombre (primer nombre).
-  → etapa: pidiendo_fecha
-
-pidiendo_fecha
-  → Sofía pasa por Claude para confirmar la fecha referenciando lo que la clienta contó antes
-  → Para carta_astral: también hora y ciudad.
-  → Se guarda session.fechaNacimiento.
-  → etapa: pidiendo_contexto
+pidiendo_datos  (UN solo paso: nombre + fecha juntos)
+  → Sofía pide nombre completo Y fecha de nacimiento en un solo mensaje (carta astral: también hora y ciudad)
+  → extraerDatosCliente() (Haiku) parsea {nombreCompleto, fechaNacimiento, horaNacimiento, ciudadNacimiento} del texto libre
+  → Si falta alguno: Sofía repregunta SOLO lo que falta, sigue en pidiendo_datos
+  → Cuando tiene nombre y fecha: guarda session.nombreCompleto/nombre/fechaNacimiento → etapa: pidiendo_contexto
 
 pidiendo_contexto
   → Sofía pide contexto para Luna. Se guarda session.contextoPorCliente.
-  → Se calcula delay aleatorio (15s–45s): session.lunaDebeEscribirEn
+  → lunaDebeEscribirEn = now + 20s. Manda el cierre de Sofía, espera ~20s EN LA MISMA invocación
+    y dispara iniciarLuna() (Luna entra sola, la clienta NO tiene que reescribir).
   → etapa: esperando_luna
 
 esperando_luna
-  → Sofía mantiene al cliente mientras espera con mensajes naturales
-  → El cron job (api/cron.js) revisa periódicamente y dispara iniciarLuna()
-  → También se dispara si el cliente escribe y ya pasó el delay
+  → Luna entra sola a ~20s desde pidiendo_contexto (disparo in-function). El cron (api/cron.js)
+    queda como RED DE SEGURIDAD por si la función murió antes de disparar.
+  → Si la clienta escribe mientras espera: Sofía la tranquiliza (NUNCA le pide reescribir).
   → Guard anti-doble-disparo: `session.lunaIniciando` (+ `lunaIniciandoEn`, TTL 90s) evita que
-    webhook y cron presenten a Luna dos veces si caen en paralelo. Se setea ANTES del chat y se
+    el disparo in-function y el cron presenten a Luna dos veces. Se setea ANTES del chat y se
     libera después (o al expirar el TTL, para no trabar a Luna si hubo timeout).
 
 con_luna — TRES PATHS según servicio
@@ -254,7 +251,7 @@ La instrucción de lectura siempre incluye:
 ### Sofía (recepcionista)
 - Atiende desde `bienvenida` hasta `pidiendo_contexto`
 - Tono: informal, rioplatense, minúsculas, máximo 1-2 oraciones, emojis variados con moderación
-- Recolecta: nombre completo → fecha de nacimiento → contexto (en ese orden), siempre pasando por Claude con historialChat para mantener continuidad
+- Recolecta: nombre+fecha JUNTOS (un paso, parseados por extraerDatosCliente con Haiku) → contexto. Siempre pasando por Claude con historialChat para mantener continuidad
 - Reconoce lo que la clienta ya contó (no pregunta como si no lo supiera)
 - No hace lecturas de tarot, no menciona que es bot ni IA
 - Detección de servicios: `detectarServicioConIA()` (Haiku) para elección directa, `clasificarIntentConfirmacion()` (Haiku) para confirmaciones, `detectarMensajeConversacional()` (Haiku) para chat casual
@@ -306,12 +303,14 @@ Múltiples mensajes: separados con `|||` en la respuesta de Claude, enviados en 
 
 `enviarImagen()` lanza error si Whapi devuelve status no-OK — el try/catch del llamador lo captura.
 
-## Cron job (entrada de Luna)
+## Cron job (entrada de Luna) — RED DE SEGURIDAD
 
-- `api/cron.js` es llamado por GitHub Actions (`.github/workflows/luna-cron.yml`) cada 5 minutos
-- Busca sesiones en estado `esperando_luna` donde `lunaDebeEscribirEn` ya pasó
-- Tiene `try/catch` por sesión individual: si una sesión falla, el loop continúa con las demás
-- **Nota**: GitHub Actions puede demorar hasta 10-15 min (cola de GitHub). Por eso Sofía le dice "escribime en un ratito y te la paso" — la clienta también puede triggerear Luna escribiendo un mensaje después del delay mínimo.
+- La entrada de Luna ahora se dispara **in-function** desde `pidiendo_contexto`: tras ~20s en la misma
+  invocación del webhook, se llama a `iniciarLuna()`. Luna entra sola, la clienta no reescribe.
+- `api/cron.js` (GitHub Actions cada 5 min) queda como **fallback**: si la función del webhook murió
+  antes de disparar (timeout, crash), el cron toma esa sesión `esperando_luna` con `lunaDebeEscribirEn`
+  vencido y la dispara. El guard `lunaIniciando` evita doble disparo.
+- Tiene `try/catch` por sesión individual y libera el guard en el catch para permitir reintento.
 
 ## Servicios y precios (precios.json)
 
@@ -334,14 +333,20 @@ Tolerancia de pago: $500.
 
 ## Problemas conocidos pendientes
 
-- **Race condition general**: dos mensajes rápidos del mismo número disparan dos Vercel functions en paralelo que leen la misma sesión de Redis simultáneamente. El segundo puede pisar el estado del primero. Solución definitiva: Redis lock (SET NX + TTL). No crítico a bajo volumen — atacar cuando escale.
-  - **Mitigado para la entrada de Luna**: el guard `lunaIniciando` (+ `lunaIniciandoEn`, TTL 90s) evita el caso puntual de que webhook y cron presenten a Luna dos veces. No es un lock real (sigue habiendo ventana TOCTOU mínima), pero alcanza a bajo volumen.
+- **Race condition general**: dos mensajes rápidos del mismo número podían disparar dos Vercel functions en paralelo que pisaban la sesión.
+  - **Mitigado con lock por número**: `adquirirLock`/`liberarLock` (Redis `SET NX` + TTL 30s) envuelven `manejarMensaje` (wrapper sobre `procesarMensaje`). Queda una ventana TOCTOU mínima si el lock no se obtiene tras un reintento, pero alcanza a bajo volumen.
+  - **Idempotencia de webhooks**: `marcarMensajeProcesado(msg.id)` (Redis `SET NX` TTL 300s) al inicio del handler descarta reintentos de Whapi (que ocurren cuando tardamos >X en responder 200, p.ej. lecturas largas o el hold de 20s de Luna). Sin esto, el mismo mensaje se procesaba dos veces.
+  - **Entrada de Luna**: el guard `lunaIniciando` (+ `lunaIniciandoEn`, TTL 90s) evita que el disparo in-function y el cron presenten a Luna dos veces.
 
 ## Principio de diseño clave
 
 **No dejar a Claude inventar mensajes críticos.** Los mensajes que siempre deben decir exactamente lo mismo (datos de pago, pedido de comprobante) son strings hardcodeados en el código, no generados por Claude. Claude solo genera contenido conversacional donde el tono importa más que el contenido exacto.
 
 **saveSession siempre DESPUÉS de chat().** Si Claude falla o hay timeout, la sesión no debe quedar en un estado avanzado sin el mensaje correspondiente. El patrón correcto: `respuesta = await chat(...)` → actualizar sesión → `saveSession`.
+
+**Idempotencia + lock al entrar.** Todo webhook pasa por `marcarMensajeProcesado(msg.id)` (descarta reintentos de Whapi) y `manejarMensaje` adquiere un lock por número antes de procesar. Indispensable porque algunas respuestas tardan (lecturas largas, hold de 20s de Luna) y Whapi reintenta si no recibe el 200 a tiempo.
+
+**Envío resiliente.** `enviarMensajesMultiples` reintenta una vez por mensaje y no aborta el burst si uno falla — así una lectura no se corta a la mitad por un fallo puntual de Whapi.
 
 ## Dependencias relevantes (package.json)
 

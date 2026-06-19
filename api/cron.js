@@ -40,8 +40,18 @@ async function enviarMensaje(numero, texto) {
 async function enviarMensajesMultiples(numero, respuesta) {
   const partes = respuesta.split('|||').map(p => p.trim()).filter(p => p.length > 0);
   for (let i = 0; i < partes.length; i++) {
-    await enviarMensaje(numero, partes[i]);
-    if (i < partes.length - 1) await new Promise(r => setTimeout(r, 1200));
+    try {
+      await enviarMensaje(numero, partes[i]);
+    } catch (err) {
+      console.error(`Error enviando mensaje ${i + 1}/${partes.length} a ${numero}, reintento:`, err.message);
+      try {
+        await new Promise(r => setTimeout(r, 500));
+        await enviarMensaje(numero, partes[i]);
+      } catch (err2) {
+        console.error(`Reintento falló (${i + 1}/${partes.length}) a ${numero}:`, err2.message);
+      }
+    }
+    if (i < partes.length - 1) await new Promise(r => setTimeout(r, 800));
   }
 }
 

@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { getSession, saveSession, deleteSession, getPreguntasRestantes, setPreguntasRestantes, decrementarPregunta } = require('../lib/session-store');
+const { getSession, saveSession, deleteSession, getPreguntasRestantes, setPreguntasRestantes, decrementarPregunta, marcarMensajeProcesado, adquirirLock, liberarLock } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
@@ -64,9 +64,21 @@ async function enviarMensajesMultiples(numero, respuesta) {
     .filter(p => p.length > 0);
 
   for (let i = 0; i < partes.length; i++) {
-    await enviarMensaje(numero, partes[i]);
+    // Envío resiliente: si Whapi falla en un mensaje, reintentamos una vez y seguimos
+    // con el resto del burst — no abortamos toda la lectura por un fallo puntual.
+    try {
+      await enviarMensaje(numero, partes[i]);
+    } catch (err) {
+      console.error(`Error enviando mensaje ${i + 1}/${partes.length} a ${numero}, reintento:`, err.message);
+      try {
+        await new Promise(r => setTimeout(r, 500));
+        await enviarMensaje(numero, partes[i]);
+      } catch (err2) {
+        console.error(`Reintento falló (${i + 1}/${partes.length}) a ${numero}:`, err2.message);
+      }
+    }
     if (i < partes.length - 1) {
-      await new Promise(r => setTimeout(r, 1200));
+      await new Promise(r => setTimeout(r, 800)); // pausa reducida para no apurar el límite de 60s en lecturas largas
     }
   }
 }
@@ -135,6 +147,35 @@ Respondé SOLO con el key exacto (ej: "tirada_simple") o "ninguno".`
 
   if (todos[key]) return { key, ...todos[key] };
   return null;
+}
+
+// ── Extraer datos personales (nombre + fecha) de un mensaje libre ────────────
+
+async function extraerDatosCliente(mensajeTexto) {
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: `Extraé los datos personales del siguiente mensaje y respondé SOLO con JSON:
+{"nombreCompleto": string|null, "fechaNacimiento": string|null, "horaNacimiento": string|null, "ciudadNacimiento": string|null}
+
+Mensaje: "${mensajeTexto}"
+
+- nombreCompleto: nombre y apellido de la persona tal como lo escribió. null si no lo da.
+- fechaNacimiento: la fecha tal cual la escribió (ej "15/03/1990", "15 de marzo de 1990"). null si no la da.
+- horaNacimiento: solo si la menciona (ej "14:30"). null si no.
+- ciudadNacimiento: solo si la menciona. null si no.`
+      }]
+    });
+    const match = response.content[0].text.match(/\{[\s\S]*\}/);
+    if (!match) return {};
+    return JSON.parse(match[0]);
+  } catch (err) {
+    console.error('Error extrayendo datos cliente:', err.message);
+    return {};
+  }
 }
 
 // ── Sugerir 2-3 servicios según la situación del cliente ─────────────────────
@@ -380,7 +421,40 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
 
 // ── Flujo principal ───────────────────────────────────────────────────────────
 
+// Wrapper con lock por número: evita que dos webhooks en paralelo del mismo número
+// se pisen la sesión en Redis. Es red de seguridad — a bajo volumen casi nunca colisiona.
 async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
+  let lockOk = await adquirirLock(numero);
+  if (!lockOk) {
+    await new Promise(r => setTimeout(r, 400));
+    lockOk = await adquirirLock(numero);
+  }
+  let resultado;
+  try {
+    resultado = await procesarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl);
+  } finally {
+    if (lockOk) await liberarLock(numero);
+  }
+
+  // Disparo diferido de Luna: se hace FUERA del lock (ya liberado) para no bloquear a la
+  // clienta durante el hold. El guard lunaIniciando + el cron de respaldo evitan doble disparo.
+  if (resultado && typeof resultado === 'object' && resultado.__dispararLunaEn) {
+    await new Promise(r => setTimeout(r, resultado.__dispararLunaEn));
+    try {
+      const s = await getSession(numero);
+      if (s.etapa === 'esperando_luna' && !s.lunaRecopiloData && !s.lunaIniciando) {
+        await iniciarLuna(numero, s);
+      }
+    } catch (err) {
+      console.error('Error disparando Luna tras el hold:', err.message);
+      // el cron de respaldo la dispara igual
+    }
+    return ''; // ya se envió todo (cierre de Sofía + entrada de Luna)
+  }
+  return resultado;
+}
+
+async function procesarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
   let session = await getSession(numero);
 
   // Reiniciar sesión solo si está trabado en pago (no cuando Luna ya está atendiendo).
@@ -673,15 +747,12 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
           if (session.nombre && session.fechaNacimiento) {
             session.etapa = 'pidiendo_contexto';
             respuesta = `¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
-          } else if (session.nombre) {
-            session.etapa = 'pidiendo_fecha';
+          } else {
+            session.etapa = 'pidiendo_datos';
             const esCartaAstral = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
             respuesta = esCartaAstral
-              ? `¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
-              : `¿y tu fecha de nacimiento? (día, mes y año)`;
-          } else {
-            session.etapa = 'pidiendo_nombre';
-            respuesta = `¿me pasás tu nombre completo para avisarle a luna?`;
+              ? `para pasarte con luna, ¿me dejás tu nombre completo y tu fecha de nacimiento? si tenés la hora y la ciudad donde naciste, sumalas`
+              : `para pasarte con luna, ¿me dejás tu nombre completo y tu fecha de nacimiento? (día, mes y año)`;
           }
         } else if (validacion.esPdf) {
           // PDF: no se puede leer como imagen. Pedimos captura y seguimos esperando (sin avisar al admin).
@@ -763,20 +834,16 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
             sc.etapa = 'pidiendo_contexto';
             await saveSession(clienteNum, sc);
             await enviarMensajesMultiples(clienteNum, `${conf}|||¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`);
-          } else if (sc.nombre) {
-            sc.etapa = 'pidiendo_fecha';
+          } else {
+            sc.etapa = 'pidiendo_datos';
             await saveSession(clienteNum, sc);
             const esCartaAstral = sc.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
-            const msgFecha = esCartaAstral
-              ? `${conf} ✨|||¿y tu fecha de nacimiento? (día, mes y año) — si tenés también la hora y la ciudad donde naciste, sumalo`
-              : `${conf}|||¿y tu fecha de nacimiento? (día, mes y año)`;
-            await enviarMensajesMultiples(clienteNum, msgFecha);
-          } else {
-            sc.etapa = 'pidiendo_nombre';
-            await saveSession(clienteNum, sc);
-            await enviarMensajesMultiples(clienteNum, `${conf} ✨|||¿me pasás tu nombre completo para avisarle a luna?`);
+            const msgDatos = esCartaAstral
+              ? `${conf} ✨|||para pasarte con luna, ¿me dejás tu nombre completo y tu fecha de nacimiento? si tenés la hora y la ciudad donde naciste, sumalas`
+              : `${conf} ✨|||para pasarte con luna, ¿me dejás tu nombre completo y tu fecha de nacimiento? (día, mes y año)`;
+            await enviarMensajesMultiples(clienteNum, msgDatos);
           }
-          respuesta = `✅ aprobado. esperando nombre de ${clienteNum}`;
+          respuesta = `✅ aprobado. esperando datos de ${clienteNum}`;
         } else if (mensajeTexto.toUpperCase().startsWith('RECHAZAR')) {
           const clienteNum = mensajeTexto.split(' ')[1];
           if (!clienteNum) {
@@ -799,43 +866,54 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
       break;
     }
 
-    // ── Pedir nombre completo ────────────────────────────────────────────────
-    case 'pidiendo_nombre': {
-      session.nombreCompleto = mensajeTexto.trim();
-      session.nombre = mensajeTexto.trim().split(' ')[0]; // primer nombre para referencias de Sofía
-      session.etapa = 'pidiendo_fecha';
-      const esCartaAstralNombre = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
-      const pedidoFecha = esCartaAstralNombre
-        ? 'fecha de nacimiento (día, mes y año) — si tiene también la hora y la ciudad donde nació, que la agregue'
-        : 'fecha de nacimiento (día, mes y año)';
-      const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
-      try {
-        respuesta = await chat(
-          prompt,
-          session.historialChat.slice(0, -1),
-          `La clienta acaba de decir que se llama ${session.nombre} (nombre completo: ${session.nombreCompleto}). Confirmá el nombre de forma cálida y natural en una frase corta — si antes contó algo personal (una situación, un problema), referencialo brevemente. Luego pedíle su ${pedidoFecha}. Máximo 2 oraciones. Sin emoji forzado.`
-        );
-      } catch (err) {
-        console.error('Error en pidiendo_nombre:', err.message);
-        respuesta = `perdón, tuve un problema. ¿me repetís tu fecha de nacimiento?`;
+    // ── Pedir datos: nombre + fecha juntos (un solo paso) ────────────────────
+    case 'pidiendo_datos': {
+      const datos = await extraerDatosCliente(mensajeTexto);
+      if (datos.nombreCompleto) {
+        session.nombreCompleto = datos.nombreCompleto.trim();
+        session.nombre = session.nombreCompleto.split(' ')[0]; // primer nombre para referencias de Sofía
       }
-      break;
-    }
-
-    // ── Pedir fecha de nacimiento ────────────────────────────────────────────
-    case 'pidiendo_fecha': {
-      session.fechaNacimiento = mensajeTexto.trim();
-      session.etapa = 'pidiendo_contexto';
+      if (datos.fechaNacimiento) {
+        let fecha = datos.fechaNacimiento.trim();
+        if (datos.horaNacimiento) fecha += `, ${datos.horaNacimiento}`;
+        if (datos.ciudadNacimiento) fecha += `, ${datos.ciudadNacimiento}`;
+        session.fechaNacimiento = fecha;
+      }
+      const esCartaAstralDatos = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
+      const faltaNombre = !session.nombreCompleto;
+      const faltaFecha = !session.fechaNacimiento;
       const prompt = getSofiaPrompt(!session.esClienteNuevo, session.nombre, false);
+
+      if (faltaNombre || faltaFecha) {
+        // Falta algún dato → repreguntar SOLO lo que falta, sin repetir lo que ya dio
+        const queFalta = [
+          faltaNombre ? 'el nombre completo' : null,
+          faltaFecha ? (esCartaAstralDatos ? 'la fecha de nacimiento (con hora y ciudad si la tiene)' : 'la fecha de nacimiento (día, mes y año)') : null
+        ].filter(Boolean).join(' y ');
+        try {
+          respuesta = await chat(
+            prompt,
+            session.historialChat.slice(0, -1),
+            `La clienta dio algunos datos pero todavía falta ${queFalta}. Pedíselo de forma cálida y breve, sin repetir lo que ya dio. Máximo 1 oración. Sin emoji forzado.`
+          );
+        } catch (err) {
+          console.error('Error en pidiendo_datos (falta dato):', err.message);
+          respuesta = `¿me pasás ${queFalta}?`;
+        }
+        break; // sigue en pidiendo_datos hasta tener ambos
+      }
+
+      // Tiene nombre y fecha → pasar a contexto
+      session.etapa = 'pidiendo_contexto';
       try {
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `La clienta acaba de dar su fecha de nacimiento (${session.fechaNacimiento}). Confirmá brevemente que la anotaste y preguntale si hay algo puntual que quiera que le cuente a luna antes de arrancar — si antes mencionó su situación, referenciarla al preguntar ("para lo que me contabas de..."). Máximo 2 oraciones. Sin emoji forzado.`
+          `La clienta dio su nombre (${session.nombre}) y su fecha de nacimiento. Confirmá brevemente que anotaste todo y preguntale si hay algo puntual que quiera que le cuente a luna antes de arrancar — si antes mencionó su situación, referenciala ("para lo que me contabas de..."). Máximo 2 oraciones. Sin emoji forzado.`
         );
       } catch (err) {
-        console.error('Error en pidiendo_fecha:', err.message);
-        respuesta = `perdón, tuve un problema. ¿hay algo puntual que quieras que le cuente a luna?`;
+        console.error('Error en pidiendo_datos (completo):', err.message);
+        respuesta = `perfecto, anotado ✨ ¿hay algo puntual que quieras que le cuente a luna para que vaya preparando la energía?`;
       }
       break;
     }
@@ -844,19 +922,22 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
     case 'pidiendo_contexto': {
       session.contextoPorCliente = mensajeTexto;
       session.etapa = 'esperando_luna';
-
-      // Delay aleatorio entre 15s y 45s — suficiente para que parezca real sin que el cliente espere mucho
-      const demoraSeg = Math.floor(Math.random() * 31) + 15;
-      session.lunaDebeEscribirEn = Date.now() + demoraSeg * 1000;
+      session.lunaDebeEscribirEn = Date.now() + 20000; // Luna entra sola en ~20s
 
       const fraseEspera = [
-        `perfecto, ya le aviso ✨|||luna está terminando con alguien, en un ratito escribime y te la paso 🌙`,
-        `dale, le mando mensaje ahora ✨|||está cerrando una consulta, en poquito escribime y te conecto con ella 🌙`,
-        `perfecto ✨|||luna está con alguien, en breve escribime y te la paso 🌙`,
-        `ya le aviso ✨|||está terminando — en un momento escribime y te conecto con luna 🌙`,
+        `perfecto, ya le paso todo a luna ✨|||en un toque te escribe ella directamente 🌙`,
+        `dale, le aviso ahora mismo ✨|||en un momentito te escribe luna 🌙`,
+        `listo, ya tiene todo lo que necesita ✨|||en unos segundos te escribe luna 🌙`,
       ];
-      respuesta = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
-      break;
+      const cierre = fraseEspera[Math.floor(Math.random() * fraseEspera.length)];
+      session.historialChat.push({ role: 'assistant', content: cierre });
+      await saveSession(numero, session);
+      await enviarMensajesMultiples(numero, cierre);
+
+      // Señalamos a manejarMensaje que dispare a Luna tras el hold de 20s. El hold se hace
+      // FUERA del lock (en manejarMensaje), para no bloquear mensajes de la clienta durante
+      // esos 20s ni arriesgar que el lock (TTL 30s) expire a mitad.
+      return { __dispararLunaEn: 20000 };
     }
 
     // ── Esperando que Luna entre ─────────────────────────────────────────────
@@ -866,11 +947,11 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         respuesta = await chat(
           prompt,
           session.historialChat.slice(0, -1),
-          `El cliente dice: "${mensajeTexto}". Luna todavía no entró. Respondé naturalmente y siempre terminá diciéndole que en un momento le escriba de nuevo para conectarla ("en un ratito escribime y te la paso", "ya falta poco, escribime en un momento"). Nunca digas que Luna va a escribir sola — el cliente tiene que mandar un mensaje para conectarse.`
+          `El cliente dice: "${mensajeTexto}". Luna ya tiene todos los datos y está por escribirle en cualquier momento (entra sola, el cliente NO tiene que hacer nada). Respondé natural y tranquilizá: "ya está por escribirte", "en un toque te escribe ella". Nunca le pidas que reescriba ni que espere un mensaje suyo.`
         );
       } catch (err) {
         console.error('Error en esperando_luna:', err.message);
-        respuesta = 'perdón, estoy teniendo problemas. escribime de nuevo en un momento 🌙';
+        respuesta = 'tranqui, luna ya está por escribirte 🌙';
       }
       break;
     }
@@ -1219,6 +1300,11 @@ module.exports = async function handler(req, res) {
 
     // Ignorar mensajes propios del bot
     if (msg.from_me) return res.status(200).json({ status: 'ok' });
+
+    // Idempotencia: si Whapi reintenta el mismo mensaje (porque tardamos en responder 200),
+    // no lo reprocesamos. Evita dobles lecturas / doble decremento de packs.
+    const esNuevo = await marcarMensajeProcesado(msg.id);
+    if (!esNuevo) return res.status(200).json({ status: 'ok', dedup: true });
 
     const numero = msg.from; // formato: 5491112345678@s.whatsapp.net
     const tipo = msg.type;
