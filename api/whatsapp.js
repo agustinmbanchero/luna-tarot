@@ -934,11 +934,11 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
 
       const servicioKey = session.serviciosSeleccionados?.[0]?.key;
       const packDef = precios.packs_combinados?.[servicioKey];
-      const necesitaCartas = (
-        session.servicio?.toLowerCase().includes('tirada') ||
-        packDef?.tirada === 'simple' ||
-        packDef?.tirada === 'completa'
-      ) && (session.cartasLanzadas || []).length === 0;
+      // Detección por KEY (fuente de verdad), no por substring del nombre display:
+      // un servicio individual de tirada, o un pack combinado que incluya tirada.
+      const tieneTiradaIndividual = session.serviciosSeleccionados?.some(s => s.key === 'tirada_simple' || s.key === 'tirada_completa');
+      const necesitaCartas = (tieneTiradaIndividual || !!packDef?.tirada)
+        && (session.cartasLanzadas || []).length === 0;
 
       if (!session.lunaRecopiloData) {
         // Fallback: Luna entró sin datos recopilados (sesión antigua o edge case).
@@ -988,7 +988,8 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         session.agregadoContexto = mensajeTexto && mensajeTexto.trim().length > 3 && !/^(no|nada|dale|listo|ok|sí|si)$/i.test(mensajeTexto.trim())
           ? mensajeTexto : '';
         const tema = detectarTema(session.historialConsulta || mensajeTexto);
-        const cantidadCartas = (session.servicio?.includes('completa') || packDef?.tirada === 'completa') ? 7 : 3;
+        const esCompleta = session.serviciosSeleccionados?.some(s => s.key === 'tirada_completa') || packDef?.tirada === 'completa';
+        const cantidadCartas = esCompleta ? 7 : 3;
 
         session.cartasLanzadas = tirarCartas(cantidadCartas, tema);
         session.cartasEnviadas = true;

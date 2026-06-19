@@ -177,8 +177,15 @@ session.lunaIniciandoEn     // timestamp del guard (TTL 90s para no trabar a Lun
 session.cartasLanzadas      // array de IDs de cartas tiradas (ej: ['el_loco', '3_copas', ...])
 session.cartasEnviadas      // true una vez que las imágenes fueron enviadas
 session.agregadoContexto    // texto extra que la clienta agregó al confirmar el arranque
-session.serviciosSeleccionados // array de servicios confirmados [{key, nombre, precio}]
-session.montosPagados       // array de montos pagados (para packs multi-sesión)
+session.serviciosSeleccionados // array de servicios confirmados [{key, nombre, precio}] — FUENTE DE VERDAD para detectar el servicio (por .key, NO por session.servicio)
+session.serviciosSugeridos  // array de servicios que Sofía sugirió (esperando_eleccion → confirmando_eleccion)
+session.servicio            // NOMBRE display del/los servicio(s) ("Tirada simple", "Pack Amor Total"). Solo para mostrar/prompt, nunca para detectar lógica
+session.precioServicio      // monto total a cobrar (suma de serviciosSeleccionados)
+session.montosPagados       // array de montos pagados (también gate de "¿pagó?": length===0 bloquea la entrada de Luna)
+session.lunaDebeEscribirEn  // timestamp a partir del cual Luna puede entrar (delay simulado)
+session.ultimaActividad     // timestamp del último mensaje (para reset por inactividad 12h)
+session.esClienteNuevo      // false una vez que ya interactuó/pagó
+session.historialChat       // array {role, content} de toda la conversación (se recorta a 40)
 ```
 
 **Nota**: `resumenSofia` ya NO se guarda en sesión. Se calcula dinámicamente con `buildResumenSofia(session.historialChat)` en cada llamada a `getLunaPrompt`. Filtra mensajes de pago (alias, montos, comprobante) para que Luna reciba solo contexto conversacional relevante.
