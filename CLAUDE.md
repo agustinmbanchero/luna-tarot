@@ -88,7 +88,7 @@ esperando_comprobante
   → Si válido: avanza a pidiendo_datos (o a pidiendo_contexto si ya tiene nombre+fecha). Si el servicio es pack_preguntas, inicializa contador Redis.
   → Si inválido: notifica al admin por WhatsApp, etapa: verificando_pago
   → Si la clienta cambia de servicio acá (texto): se actualiza serviciosSeleccionados + servicio (display) + precio
-  → Stickers/audios/video: responden con aviso ("no puedo leer audios...") en lugar de ignorar
+  → Stickers/audios/video: aviso humano ("los videos no me llegan bien, contame por texto") con cooldown 20s anti-repetición
 
 verificando_pago
   → Admin responde "APROBAR <numero>" o "RECHAZAR <numero>"
@@ -183,6 +183,9 @@ session.lunaDebeEscribirEn  // timestamp a partir del cual Luna puede entrar (de
 session.ultimaActividad     // timestamp del último mensaje (para reset por inactividad 12h)
 session.esClienteNuevo      // false una vez que ya interactuó/pagó
 session.historialChat       // array {role, content} de toda la conversación (se recorta a 40)
+session.bufferFragmentos    // fragmentos de texto acumulados durante la ventana de debounce
+session.debounceMsgId       // id del último mensaje recibido (para que solo el último responda)
+session.ultimoAvisoMediaEn  // timestamp del último aviso "no veo videos/stickers" (cooldown anti-repetición)
 ```
 
 **Nota**: `resumenSofia` ya NO se guarda en sesión. Se calcula dinámicamente con `buildResumenSofia(session.historialChat)` en cada llamada a `getLunaPrompt`. Filtra mensajes de pago (alias, montos, comprobante) para que Luna reciba solo contexto conversacional relevante.
@@ -285,7 +288,7 @@ La instrucción de lectura siempre incluye:
 }
 ```
 - Se ignoran mensajes donde `from_me: true`
-- Tipos no manejados (sticker, audio, video): responden con mensaje informativo ("no puedo escuchar audios...") en lugar de ignorar en silencio
+- Tipos no manejados (sticker, audio, video): aviso humano ("los videos/stickers no me llegan bien, contame por texto") con cooldown de 20s para no repetirlo si mandan varios seguidos
 
 ### Envío de mensajes
 
@@ -347,6 +350,8 @@ Tolerancia de pago: $500.
 **Idempotencia + lock al entrar.** Todo webhook pasa por `marcarMensajeProcesado(msg.id)` (descarta reintentos de Whapi) y `manejarMensaje` adquiere un lock por número antes de procesar. Indispensable porque algunas respuestas tardan (lecturas largas, hold de 20s de Luna) y Whapi reintenta si no recibe el 200 a tiempo.
 
 **Envío resiliente.** `enviarMensajesMultiples` reintenta una vez por mensaje y no aborta el burst si uno falla — así una lectura no se corta a la mitad por un fallo puntual de Whapi.
+
+**Debounce de mensajes (DEBOUNCE_MS = 15s).** La gente escribe en varios mensajes cortos. Cada fragmento de TEXTO se acumula en `session.bufferFragmentos` y se marca `debounceMsgId`; la función espera 15s (FUERA del lock) y, si llegó un mensaje más nuevo, aborta sin responder. Solo el último fragmento combina todo el buffer en un mensaje y responde. Las imágenes/documentos (comprobantes) NO se debouncen — se procesan al instante. Constante fácil de ajustar al inicio de `whatsapp.js`. Nota: suma 15s a cada respuesta de texto; en `pidiendo_contexto` se acumula con el hold de 20s de Luna (total ~35s hasta que Luna entra), dentro del margen de 60s de Vercel — si Anthropic se pone lento, el cron de respaldo cubre la entrada de Luna.
 
 ## Dependencias relevantes (package.json)
 

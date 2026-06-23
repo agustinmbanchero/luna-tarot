@@ -103,6 +103,21 @@ function urlCarta(cartaId) {
   return `https://raw.githubusercontent.com/agustinmbanchero/luna-tarot/main/public/cartas/${cartaId}.jpg`;
 }
 
+// ── Debounce: esperar a que el cliente termine de escribir ───────────────────
+// La gente escribe en varios mensajes cortos. Esperamos esta ventana desde el último
+// mensaje antes de responder, así Sofía no contesta a un fragmento a medio escribir.
+const DEBOUNCE_MS = 15000;
+
+// Acumula un fragmento de texto en un buffer y marca este mensaje como el último recibido.
+async function registrarFragmento(numero, mensajeTexto, msgId) {
+  const session = await getSession(numero);
+  if (!Array.isArray(session.bufferFragmentos)) session.bufferFragmentos = [];
+  session.bufferFragmentos.push(mensajeTexto);
+  session.debounceMsgId = msgId;
+  session.ultimaActividad = Date.now();
+  await saveSession(numero, session);
+}
+
 // ── Detección de servicio con Claude ─────────────────────────────────────────
 
 async function detectarServicioConIA(mensajeTexto) {
@@ -423,15 +438,33 @@ async function iniciarLuna(numero, session, mensajeClienteMientrasEsperaba = nul
 
 // Wrapper con lock por número: evita que dos webhooks en paralelo del mismo número
 // se pisen la sesión en Redis. Es red de seguridad — a bajo volumen casi nunca colisiona.
-async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
+async function manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl, msgId) {
+  // Debounce SOLO para texto. Las imágenes/documentos (comprobantes) se procesan al instante.
+  // Acumulamos el fragmento, esperamos la ventana y, si llegó un mensaje más nuevo, este se calla
+  // (el más nuevo será el que responda, ya con todos los fragmentos combinados).
+  if (!tieneImagen) {
+    await registrarFragmento(numero, mensajeTexto, msgId);
+    await new Promise(r => setTimeout(r, DEBOUNCE_MS)); // espera FUERA del lock
+  }
+
   let lockOk = await adquirirLock(numero);
   if (!lockOk) {
     await new Promise(r => setTimeout(r, 400));
     lockOk = await adquirirLock(numero);
   }
   let resultado;
+  let textoEfectivo = mensajeTexto;
   try {
-    resultado = await procesarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl);
+    if (!tieneImagen) {
+      const s = await getSession(numero);
+      if (s.debounceMsgId !== msgId) return ''; // llegó un mensaje más nuevo → este aborta
+      // Soy el último: combino los fragmentos acumulados en un solo mensaje y limpio el buffer
+      const frags = (s.bufferFragmentos && s.bufferFragmentos.length) ? s.bufferFragmentos : [mensajeTexto];
+      textoEfectivo = frags.join('\n');
+      s.bufferFragmentos = [];
+      await saveSession(numero, s);
+    }
+    resultado = await procesarMensaje(numero, textoEfectivo, tieneImagen, mediaUrl);
   } finally {
     if (lockOk) await liberarLock(numero);
   }
@@ -1324,10 +1357,20 @@ module.exports = async function handler(req, res) {
       mediaUrl = msg.document?.link;
       mensajeTexto = msg.document?.caption || '';
     } else {
-      // Tipo no manejado (sticker, audio, video, etc.)
-      // Responder siempre para que la clienta no quede en silencio
+      // Tipo no manejado (sticker, audio, video). No los podemos ver: avisamos en humano.
+      // Cooldown para no repetir el aviso si la clienta manda varios seguidos (ej. 2 videos).
       try {
-        await enviarMensaje(numero, 'por acá solo puedo leer texto e imágenes — si querés contarme algo escribime un mensaje 🌙');
+        const s = await getSession(numero);
+        const ahora = Date.now();
+        if (!s.ultimoAvisoMediaEn || (ahora - s.ultimoAvisoMediaEn) > 20000) {
+          s.ultimoAvisoMediaEn = ahora;
+          await saveSession(numero, s);
+          const avisos = [
+            'uy, los videos y stickers no me llegan bien por acá 🙈 contame por texto y seguimos',
+            'jaja eso no lo puedo abrir desde acá — escribime un mensajito y vemos 🌙'
+          ];
+          await enviarMensaje(numero, avisos[Math.floor(Math.random() * avisos.length)]);
+        }
       } catch (e) { console.error('Error respondiendo tipo no manejado:', e); }
       return res.status(200).json({ status: 'ok' });
     }
@@ -1336,7 +1379,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ status: 'ok' });
     }
 
-    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl);
+    const respuesta = await manejarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl, msg.id);
 
     if (respuesta) {
       await enviarMensajesMultiples(numero, respuesta);
