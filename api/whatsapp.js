@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { getSession, saveSession, deleteSession, getPreguntasRestantes, setPreguntasRestantes, decrementarPregunta, marcarMensajeProcesado, adquirirLock, liberarLock } = require('../lib/session-store');
+const { getSession, saveSession, deleteSession, getPreguntasRestantes, setPreguntasRestantes, decrementarPregunta, marcarMensajeProcesado, adquirirLock, liberarLock, getPerfilCliente, guardarPerfilCliente } = require('../lib/session-store');
 const { chat } = require('../lib/anthropic');
 const { getSofiaPrompt, getLunaPrompt } = require('../config/prompts');
 const { tirarCartas, nombreCarta, detectarTema } = require('../config/cartas');
@@ -524,6 +524,19 @@ async function procesarMensaje(numero, mensajeTexto, tieneImagen, mediaUrl) {
     session.esClienteNuevo = false;
   }
 
+  // Reconocer cliente que vuelve: si la sesión es nueva (recién creada o expirada) pero tenemos
+  // su perfil persistente, lo cargamos para que Sofía la salude por su nombre y no le vuelva a
+  // pedir los datos en una próxima compra.
+  if (session.etapa === 'bienvenida' && !session.nombre) {
+    const perfil = await getPerfilCliente(numero);
+    if (perfil && perfil.nombre) {
+      session.nombre = perfil.nombre;
+      session.nombreCompleto = perfil.nombreCompleto || perfil.nombre;
+      if (perfil.fechaNacimiento) session.fechaNacimiento = perfil.fechaNacimiento;
+      session.esClienteNuevo = false;
+    }
+  }
+
   session.ultimaActividad = Date.now();
   session.historialChat.push({ role: 'user', content: mensajeTexto });
 
@@ -911,6 +924,14 @@ PROHIBIDO ABSOLUTAMENTE: pedir nombre, apellido, fecha, hora, ciudad, contexto, 
         if (datos.horaNacimiento) fecha += `, ${datos.horaNacimiento}`;
         if (datos.ciudadNacimiento) fecha += `, ${datos.ciudadNacimiento}`;
         session.fechaNacimiento = fecha;
+      }
+      // Persistir en el perfil del cliente (vive 1 año) para reconocerla cuando vuelva
+      if (session.nombreCompleto || session.fechaNacimiento) {
+        await guardarPerfilCliente(numero, {
+          nombre: session.nombre,
+          nombreCompleto: session.nombreCompleto,
+          fechaNacimiento: session.fechaNacimiento
+        });
       }
       const esCartaAstralDatos = session.serviciosSeleccionados?.some(s => s.key === 'carta_astral');
       const faltaNombre = !session.nombreCompleto;

@@ -200,6 +200,17 @@ Los packs de preguntas tienen su contador en **Redis separado** con TTL de 30 d�
 
 Funciones en `lib/session-store.js`: `getPreguntasRestantes(numero)`, `setPreguntasRestantes(numero, cantidad)`, `decrementarPregunta(numero)`.
 
+## Perfil del cliente (identidad persistente)
+
+Independiente de la sesión (24h), guarda la **identidad** de cada número con TTL de **1 año**:
+- Key Redis: `cliente:{numero}` → `{ nombre, nombreCompleto, fechaNacimiento, ultimaVez }`
+- Se guarda (merge, nunca pisa con null) en `pidiendo_datos` apenas se capturan nombre/fecha.
+- Al arrancar una sesión nueva (`etapa === 'bienvenida' && !nombre`), `procesarMensaje` busca el perfil:
+  si existe, carga nombre/fecha y pone `esClienteNuevo = false` → Sofía saluda "hola de nuevo, {nombre}"
+  y en una próxima compra NO vuelve a pedir los datos (cae directo a `pidiendo_contexto` tras pagar).
+- NO preserva el historial de la charla vieja — solo la identidad (recordar quién es, no retomar).
+- Funciones en `lib/session-store.js`: `getPerfilCliente(numero)`, `guardarPerfilCliente(numero, datos)`.
+
 ## Imágenes de cartas
 
 Las 78 imágenes del mazo Rider-Waite están en `public/cartas/` como `{id}.jpg` (ej: `el_loco.jpg`, `3_copas.jpg`).
