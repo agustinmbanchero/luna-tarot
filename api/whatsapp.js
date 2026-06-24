@@ -134,6 +134,7 @@ async function detectarServicioConIA(mensajeTexto) {
     })
     .join('\n');
 
+  try {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 50,
@@ -162,6 +163,10 @@ Respondé SOLO con el key exacto (ej: "tirada_simple") o "ninguno".`
 
   if (todos[key]) return { key, ...todos[key] };
   return null;
+  } catch (err) {
+    console.error('Error en detectarServicioConIA:', err.message);
+    return null; // ante un fallo de la API, tratamos como "no eligió servicio explícito"
+  }
 }
 
 // ── Extraer datos personales (nombre + fecha) de un mensaje libre ────────────
@@ -206,6 +211,7 @@ async function sugerirServiciosConIA(mensajeTexto) {
     .map(([key, val]) => `${key}: ${val.nombre} — ${val.descripcion || val.incluye || ''} ($${val.precio?.toLocaleString('es-AR')})`)
     .join('\n');
 
+  try {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 100,
@@ -230,11 +236,16 @@ Respondé SOLO con los keys separados por coma. Ej: tirada_simple,desbloqueo_cam
 
   const resultado = keys.map(key => todos[key] ? { key, ...todos[key] } : null).filter(Boolean);
   return resultado.length > 0 ? resultado : null;
+  } catch (err) {
+    console.error('Error en sugerirServiciosConIA:', err.message);
+    return null; // sin sugerencias → Sofía responde de forma conversacional
+  }
 }
 
 // ── Detectar mensaje puramente conversacional/social ─────────────────────────
 
 async function detectarMensajeConversacional(mensajeTexto) {
+  try {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 10,
@@ -246,11 +257,16 @@ Respondé solo: si / no`
     }]
   });
   return response.content[0].text.trim().toLowerCase().startsWith('si');
+  } catch (err) {
+    console.error('Error en detectarMensajeConversacional:', err.message);
+    return false; // ante fallo, no lo tratamos como casual (sigue el flujo normal)
+  }
 }
 
 // ── Detectar si piden ver el menú/listado de servicios ───────────────────────
 
 async function detectarPeticionMenu(mensajeTexto) {
+  try {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 10,
@@ -262,6 +278,10 @@ Respondé solo: si / no`
     }]
   });
   return response.content[0].text.trim().toLowerCase().startsWith('si');
+  } catch (err) {
+    console.error('Error en detectarPeticionMenu:', err.message);
+    return false;
+  }
 }
 
 // ── Clasificar intención de confirmación del cliente ─────────────────────────
@@ -279,6 +299,7 @@ async function clasificarIntentConfirmacion(mensajeTexto, serviciosSugeridos) {
     .map(([k, v]) => `${k}: ${v.nombre}`)
     .join(', ');
 
+  try {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 100,
@@ -324,6 +345,10 @@ Si no confirma: respondé exactamente: ninguno`
   return keys
     .map(k => todosServicios[k] ? { key: k, ...todosServicios[k] } : null)
     .filter(Boolean);
+  } catch (err) {
+    console.error('Error en clasificarIntentConfirmacion:', err.message);
+    return []; // ante fallo, NO confirmamos: Sofía sigue preguntando, nunca avanza sola al pago
+  }
 }
 
 // ── Validación de comprobante con Claude ──────────────────────────────────────
@@ -1341,6 +1366,8 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  let numeroParaFallback = null; // para la red de seguridad: nunca dejar a la clienta sin respuesta
+
   try {
     const body = req.body;
 
@@ -1361,6 +1388,7 @@ module.exports = async function handler(req, res) {
     if (!esNuevo) return res.status(200).json({ status: 'ok', dedup: true });
 
     const numero = msg.from; // formato: 5491112345678@s.whatsapp.net
+    numeroParaFallback = numero;
     const tipo = msg.type;
 
     let mensajeTexto = '';
@@ -1410,6 +1438,13 @@ module.exports = async function handler(req, res) {
 
   } catch (error) {
     console.error('Error en webhook:', error);
+    // Red de seguridad: pase lo que pase, la clienta NUNCA queda sin respuesta.
+    // No tocamos la sesión (así el próximo mensaje reintenta el flujo desde donde estaba).
+    if (numeroParaFallback) {
+      try {
+        await enviarMensaje(numeroParaFallback, 'uy, se me cruzó algo recién 🙈 ¿me lo repetís?');
+      } catch (e) { console.error('Error enviando fallback de seguridad:', e.message); }
+    }
     res.status(200).json({ status: 'error', message: error.message });
   }
 };
